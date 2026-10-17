@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Written by spi install from spi.toml. Don't edit: change spi.toml and run
+         spi install again, which writes this file again. The monitor's own
+         settings are in the -health.conf file next to the mint's env file; spi
+         writes it once and never overwrites it. -->
+    <key>Label</key>
+    <string>org.servicepoints.{{name}}-health</string>
+
+    <!-- What it watches, and what it runs to restart the mint, come from
+         spi.toml. An environment variable wins over the settings file. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HEALTH_NAME</key>
+        <string>{{name}}</string>
+        <key>HEALTH_URL</key>
+        <string>{{health_url}}</string>
+        <key>HEALTH_RESTART_CMD</key>
+        <string>{{restart_cmd}}</string>
+    </dict>
+
+    <!-- Runs as root only because restarting a system service needs it. With
+         HEALTH_ACTION=report it can run as the service user (add UserName and
+         GroupName). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{bin_dir}}/sp-health-monitor.sh</string>
+        <string>--config</string>
+        <string>{{etc_dir}}/{{name}}-health.conf</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>{{log_dir}}/{{name}}-health.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{log_dir}}/{{name}}-health.log</string>
+</dict>
+</plist>

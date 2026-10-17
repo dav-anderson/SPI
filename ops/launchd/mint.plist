@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Written by spi install from spi.toml. Don't edit: change spi.toml and run
+         spi install again, which writes this file again. -->
+    <key>Label</key>
+    <string>org.servicepoints.{{name}}</string>
+
+    <!-- Not root. The settings are in the first env file, which spi writes; the
+         second is yours (spi never overwrites it): put any secret there. Both
+         can be read only by root and this group. exec makes the mint the process
+         launchd watches, so a stop signal reaches it directly. -->
+    <key>UserName</key>
+    <string>{{user}}</string>
+    <key>GroupName</key>
+    <string>{{group}}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>set -a; . '{{etc_dir}}/{{name}}.env'; . '{{etc_dir}}/{{name}}.secret.env'; set +a; exec '{{bin_dir}}/{{name}}' serve</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{{data_dir}}/{{name}}</string>
+
+    <!-- Start at boot, and start again when it exits with an error or is killed.
+         A clean exit (status 0, after a stop signal) is left alone. launchd waits
+         ThrottleInterval seconds between starts; it has no growing delay, and no
+         start order: a mint that starts before what it needs exits or waits, and
+         is started again. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <!-- After a stop signal, wait this long for the mint to finish its requests. -->
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>{{log_dir}}/{{name}}.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{log_dir}}/{{name}}.log</string>
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -1,0 +1,33 @@
+# Written by `spi install` from spi.toml. Don't edit: change spi.toml and run
+# `spi install` again, which writes this file again. The monitor's own
+# settings (how often, how many failures) are in {{etc_dir}}/{{name}}-health.conf,
+# which spi writes once and never overwrites.
+[Unit]
+Description=Health monitor for {{name}}
+After={{name}}.service
+# Keep trying however many times it fails.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# What it watches, and what it runs to restart the mint, come from spi.toml.
+# An environment variable wins over the settings file.
+Environment=HEALTH_NAME={{name}}
+Environment=HEALTH_URL={{health_url}}
+Environment="HEALTH_RESTART_CMD={{restart_cmd}}"
+# Root only because restarting a system service needs it. With HEALTH_ACTION=report
+# it can run as the service user (add User= and Group=).
+ExecStart={{bin_dir}}/sp-health-monitor.sh --config {{etc_dir}}/{{name}}-health.conf
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=10
+StandardOutput=append:{{log_dir}}/{{name}}-health.log
+StandardError=append:{{log_dir}}/{{name}}-health.log
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome={{protect_home}}
+
+[Install]
+WantedBy=multi-user.target

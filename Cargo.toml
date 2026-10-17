@@ -1,0 +1,29 @@
+[package]
+name = "spi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "One command line and one config over psp-mint, esp-mint and bitcoind."
+
+[dependencies]
+# Only for the unit constants (ESP_PER_PSP): the one place they are defined.
+sp-wire = { git = "https://github.com/dav-anderson/sp-wire.git", tag = "v0.4.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+[lib]
+name = "spi"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spi"
+path = "src/main.rs"
+
+# For local work, put this in .cargo/config.toml (git-ignored) or uncomment it
+# here and do not commit it.
+#
+# [patch."https://github.com/dav-anderson/sp-wire.git"]
+# sp-wire = { path = "../sp-wire" }

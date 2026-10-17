@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Written by spi install from spi.toml. Don't edit: change spi.toml and run
+         spi install again, which writes this file again. Not written when
+         [bitcoind] manage is false. -->
+    <key>Label</key>
+    <string>org.servicepoints.bitcoind</string>
+
+    <!-- Not root. In the foreground: no -daemon, so launchd watches bitcoind
+         itself. Its own log is debug.log in its data folder. -->
+    <key>UserName</key>
+    <string>{{user}}</string>
+    <key>GroupName</key>
+    <string>{{group}}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{bitcoind_bin}}</string>
+{{bitcoind_args_xml}}
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{{bitcoind_datadir}}</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <!-- After a stop signal, wait this long for bitcoind to write its state out. -->
+    <key>ExitTimeOut</key>
+    <integer>600</integer>
+
+    <key>StandardOutPath</key>
+    <string>{{log_dir}}/bitcoind.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{log_dir}}/bitcoind.log</string>
+    <!-- The data folder is readable by the group (the cookie is, by
+         -rpccookieperms=group), so that a person in it can run spi against this node. -->
+    <key>Umask</key>
+    <integer>23</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

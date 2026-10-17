@@ -1,0 +1,44 @@
+# Written by `spi install` from spi.toml. Don't edit: change spi.toml and run
+# `spi install` again, which writes this file again. Not written when
+# [bitcoind] manage is false.
+[Unit]
+Description=Bitcoin Core (bitcoind) for the Service Points mints, {{network}}
+After=network-online.target
+Wants=network-online.target
+# Keep trying however many times it fails.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{user}}
+Group={{group}}
+# In the foreground: no -daemon. Its own log is debug.log in its data folder.
+ExecStart={{bitcoind_bin}} {{bitcoind_args}}
+
+Restart=on-failure
+RestartSec=10
+
+# A stop sends SIGTERM. bitcoind writes its state out and exits with status 0,
+# which can take minutes on a large node.
+KillSignal=SIGTERM
+TimeoutStopSec=600
+
+# The only places it may write: its data folder (which holds the RPC cookie the
+# mints read) and the log of its console output.
+ReadWritePaths={{bitcoind_datadir}} {{log_dir}}
+StandardOutput=append:{{log_dir}}/bitcoind.log
+StandardError=append:{{log_dir}}/bitcoind.log
+# The data folder is readable by the group (the cookie is, by -rpccookieperms=group),
+# so that a person in it can run spi against this node.
+UMask=0027
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome={{protect_home}}
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

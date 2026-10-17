@@ -1,0 +1,49 @@
+# Written by `spi install` from spi.toml. Don't edit: change spi.toml and run
+# `spi install` again, which writes this file again.
+[Unit]
+Description=Service Points {{name}}: {{description}}
+After={{after}}
+Wants={{wants}}
+# Keep trying however many times it fails.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{user}}
+Group={{group}}
+# The settings: KEY=VALUE lines. The first file is written by spi (the data
+# folder, the settings file, the network); the second is yours and spi never
+# overwrites it: put any secret there.
+EnvironmentFile={{etc_dir}}/{{name}}.env
+EnvironmentFile={{etc_dir}}/{{name}}.secret.env
+ExecStart={{bin_dir}}/{{name}} serve
+
+# Start again when it exits with an error or is killed. The delay grows from 5 s
+# to 5 min. RestartSteps and RestartMaxDelaySec need systemd 254 or later; an
+# older systemd warns about them, ignores them, and waits 5 s each time.
+Restart=on-failure
+RestartSec=5
+RestartSteps=6
+RestartMaxDelaySec=300
+
+# A stop sends SIGTERM. The mint finishes the requests it is answering and exits
+# with status 0; after this long it is killed.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# The only places it may write: its data and its log.
+ReadWritePaths={{data_dir}}/{{name}} {{log_dir}}
+StandardOutput=append:{{log_dir}}/{{name}}.log
+StandardError=append:{{log_dir}}/{{name}}.log
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome={{protect_home}}
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
