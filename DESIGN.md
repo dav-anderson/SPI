@@ -92,6 +92,5 @@ What spi does with them:
 - The real mints are not started in the tests (see the README).
 - The health monitor is a shell script (the same one the mints have always used, embedded unchanged); spi has no monitor of its own.
 - The service script has not been run on a real Linux or macOS machine by the tests; run a first install on a test machine.
-- No fsp-mint service files: it belongs to the service that runs it.
 - `start` and `stop` manage processes of the current user. They do not talk to launchd or systemd.
-- fsp-mint is not managed: it belongs to the service that runs it, and has its own `audit` (the figure here leaves FSP out).
+- spi never manages fsp-mint, and writes no service files for it. spi is psp-mint, esp-mint and bitcoind only. An FSP mint is run through the operator control interface of the AIR service it belongs to, and has its own `audit` (the figure here leaves FSP out).

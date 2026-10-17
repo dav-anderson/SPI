@@ -1,6 +1,6 @@
 # spi
 
-One config and one command line over `psp-mint`, `esp-mint` and `bitcoind`. It does not link the mints or change them: it writes their config files and the files that run them as services, starts and stops their binaries, and reads their `GET /health` and `GET /audit`. Version 0.1.0. Why it is built this way is in [DESIGN.md](DESIGN.md).
+One config and one command line over `psp-mint`, `esp-mint` and `bitcoind`. It does not link the mints or change them: it writes their config files and the files that run them as services, starts and stops their binaries, and reads their `GET /health` and `GET /audit`. It never manages fsp-mint: spi is psp-mint, esp-mint and bitcoind only, and an FSP mint is run through the operator control interface of the AIR service it belongs to. Version 0.1.0. Why it is built this way is in [DESIGN.md](DESIGN.md).
 
 ## Getting the binaries
 
