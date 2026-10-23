@@ -12,7 +12,8 @@ StartLimitIntervalSec=0
 Type=simple
 User={{user}}
 Group={{group}}
-# In the foreground: no -daemon. Its own log is debug.log in its data folder.
+# In the foreground: no -daemon. spi passes -nodebuglogfile -printtoconsole, so
+# its whole log goes to bitcoind.log below, under the logrotate limits.
 ExecStart={{bitcoind_bin}} {{bitcoind_args}}
 
 Restart=on-failure

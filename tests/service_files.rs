@@ -36,7 +36,7 @@ fn load_os(dir: &Path, text: &str, mac: bool, env: &[(&str, &str)]) -> Result<Sp
 fn binaries(dir: &Path) -> PathBuf {
     let bins = dir.join("bins");
     std::fs::create_dir_all(&bins).unwrap();
-    for n in ["psp-mint", "esp-mint", "bitcoind"] {
+    for n in ["psp-mint", "esp-mint", "bitcoind", "air_server"] {
         std::fs::write(bins.join(n), "#!/bin/sh\n").unwrap();
     }
     std::fs::canonicalize(bins).unwrap()
@@ -47,9 +47,13 @@ fn binaries(dir: &Path) -> PathBuf {
 fn config_text(dir: &Path, network: &str, bitcoind: &str, service: &str) -> String {
     let b = binaries(dir);
     let b = b.display();
+    // The AIR server's name is set, so that the plan has no warning about it:
+    // these fixtures test what else a plan warns about.
+    let name = "ab".repeat(32);
     format!(
         "network = \"{network}\"\n\
          [bitcoind]\nbin = \"{b}/bitcoind\"\n{bitcoind}\n\
+         [air]\nbin = \"{b}/air_server\"\nname = \"02{name}\"\n\
          [psp]\nbin = \"{b}/psp-mint\"\n\
          [esp]\nbin = \"{b}/esp-mint\"\n\
          [service]\n{service}\n"
@@ -104,10 +108,15 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
         said.contains("  sudo systemctl enable --now sp-bitcoind.service\n  spi install --no-service-files   (again"),
         "{said}"
     );
+    // The AIR server starts after bitcoind and before the mints.
+    let air_start =
+        "  sudo systemctl enable --now sp-air-server.service sp-air-server-health.service";
+    let mint_start = "  sudo systemctl enable --now psp-mint.service esp-mint.service psp-mint-health.service esp-mint-health.service";
+    assert!(said.contains(air_start), "{said}");
+    assert!(said.contains(mint_start), "{said}");
     assert!(
-        said.contains(
-            "  sudo systemctl enable --now psp-mint.service esp-mint.service psp-mint-health.service esp-mint-health.service"
-        ),
+        said.find("(again").unwrap() < said.find(air_start).unwrap()
+            && said.find(air_start).unwrap() < said.find(mint_start).unwrap(),
         "{said}"
     );
     assert!(said.contains("esp-mint.secret.env"), "{said}");
@@ -126,6 +135,10 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
         "esp-mint-health.conf",
         "esp-mint-health.service",
         "sp-bitcoind.service",
+        "air-server.env",
+        "sp-air-server.service",
+        "sp-air-server-health.conf",
+        "sp-air-server-health.service",
         "sp-health-monitor.sh",
         "logrotate-sp-mint",
         "install-system.sh",
@@ -142,8 +155,8 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
     for line in [
         "User=spmint",
         "Group=spmint",
-        "After=network-online.target sp-bitcoind.service",
-        "Wants=network-online.target sp-bitcoind.service",
+        "After=network-online.target sp-bitcoind.service sp-air-server.service",
+        "Wants=network-online.target sp-bitcoind.service sp-air-server.service",
         "EnvironmentFile=/etc/sp-mint/psp-mint.env",
         "EnvironmentFile=/etc/sp-mint/psp-mint.secret.env",
         "ExecStart=/usr/local/bin/psp-mint serve",
@@ -152,7 +165,7 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
         "ProtectHome=yes",
         "ProtectSystem=strict",
         "KillSignal=SIGTERM",
-        "TimeoutStopSec=30",
+        "TimeoutStopSec=120",
     ] {
         assert!(psp.lines().any(|l| l == line), "{line} not in\n{psp}");
     }
@@ -163,7 +176,7 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
 
     let btc = read(&out_dir, "sp-bitcoind.service");
     assert!(
-        btc.contains("ExecStart=/usr/local/bin/bitcoind -regtest -datadir=/var/lib/sp-mint/bitcoind -rpccookieperms=group -rpcport=1"),
+        btc.contains("ExecStart=/usr/local/bin/bitcoind -regtest -datadir=/var/lib/sp-mint/bitcoind -rpccookieperms=group -nodebuglogfile -printtoconsole -rpcport=1"),
         "{btc}"
     );
     assert!(
@@ -278,7 +291,7 @@ fn macos_install_with_no_sandbox_mint_writes_complete_plists() {
         ". '/etc/sp-mint/psp-mint.env'; . '/etc/sp-mint/psp-mint.secret.env'; set +a; exec '/usr/local/bin/psp-mint' serve",
         "<key>WorkingDirectory</key>\n    <string>/var/lib/sp-mint/psp-mint</string>",
         "<string>/var/log/sp-mint/psp-mint.log</string>",
-        "<key>ExitTimeOut</key>\n    <integer>30</integer>",
+        "<key>ExitTimeOut</key>\n    <integer>120</integer>",
     ] {
         assert!(psp.contains(needle), "{needle} not in\n{psp}");
     }
@@ -445,7 +458,7 @@ fn the_service_section_sets_the_account_the_folders_and_the_bitcoind_command() {
     let btc = file("sp-bitcoind.service");
     assert!(
         btc.contains(
-            "ExecStart=/opt/sp/bin/bitcoind -datadir=/srv/btc -rpccookieperms=group -rpcport=28332 -txindex -dbcache=2000"
+            "ExecStart=/opt/sp/bin/bitcoind -datadir=/srv/btc -rpccookieperms=group -nodebuglogfile -printtoconsole -rpcport=28332 -txindex -dbcache=2000"
         ),
         "{btc}"
     );
@@ -511,14 +524,19 @@ fn a_cookie_written_down_at_the_service_path_is_used_without_a_warning() {
     .unwrap();
     let plan = service::plan(&spi, None).unwrap();
     assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
-    assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+    // The AIR server's identity note is always there; there is no cookie note.
+    assert_eq!(plan.notes.len(), 1, "{:?}", plan.notes);
+    assert!(plan.notes[0].contains("identity"), "{:?}", plan.notes);
+    assert!(!plan.notes[0].contains("cookie"), "{:?}", plan.notes);
 
     // Left to its default, the cookie is the service's, and the note says how
     // to read it as yourself.
     let dir = scratch("cookie-note");
     let spi = load_os(&dir, &config_text(&dir, "regtest", "", ""), false, &[]).unwrap();
     let plan = service::plan(&spi, None).unwrap();
-    assert_eq!(plan.notes.len(), 1);
+    // The cookie note, then the AIR server's identity note.
+    assert_eq!(plan.notes.len(), 2, "{:?}", plan.notes);
+    assert!(plan.notes[1].contains("identity"), "{:?}", plan.notes);
     let note = &plan.notes[0];
     assert!(
         note.contains("add yourself to the group `spmint`"),
@@ -549,7 +567,10 @@ fn a_bitcoind_that_spi_does_not_manage_gets_no_unit_and_a_warning_about_its_cook
         .find(|(n, _)| n == "psp-mint.service")
         .unwrap()
         .1;
-    assert!(psp.contains("After=network-online.target\n"), "{psp}");
+    assert!(
+        psp.contains("After=network-online.target sp-air-server.service\n"),
+        "{psp}"
+    );
     assert!(!psp.contains("sp-bitcoind"));
     // The default cookie is in the home folder of whoever ran spi: a service
     // user can not read it, and ProtectHome would hide it.
@@ -584,10 +605,12 @@ fn without_health_monitors_there_are_none() {
         "psp-mint-health.service",
         "psp-mint-health.conf",
         "esp-mint-health.service",
+        "sp-air-server-health.service",
+        "sp-air-server-health.conf",
     ] {
         assert!(!names.contains(&gone), "{gone}");
     }
-    assert_eq!(plan.start.len(), 3);
+    assert_eq!(plan.start.len(), 4);
     assert_eq!(
         plan.start[0],
         "sudo systemctl enable --now sp-bitcoind.service"
@@ -595,6 +618,10 @@ fn without_health_monitors_there_are_none() {
     assert!(plan.start[1].starts_with("spi install"));
     assert_eq!(
         plan.start[2],
+        "sudo systemctl enable --now sp-air-server.service"
+    );
+    assert_eq!(
+        plan.start[3],
         "sudo systemctl enable --now psp-mint.service esp-mint.service"
     );
 }
@@ -602,14 +629,17 @@ fn without_health_monitors_there_are_none() {
 #[test]
 fn a_binary_that_is_not_found_is_a_warning_and_a_guard_in_the_script_and_not_a_failure() {
     let dir = scratch("nobinary");
-    let text = "[psp]\nbin = \"/nonexistent/psp-mint\"\n[esp]\nbin = \"esp-mint-that-is-not-installed\"\n[bitcoind]\nbin = \"bitcoind-that-is-not-installed\"\n";
-    let spi = load_os(&dir, text, false, &[]).unwrap();
+    let text = format!(
+        "[psp]\nbin = \"/nonexistent/psp-mint\"\n[esp]\nbin = \"esp-mint-that-is-not-installed\"\n[bitcoind]\nbin = \"bitcoind-that-is-not-installed\"\n[air]\nbin = \"air-server-that-is-not-installed\"\nname = \"{}\"\n",
+        "02".repeat(33)
+    );
+    let spi = load_os(&dir, &text, false, &[]).unwrap();
     let plan = service::plan(&spi, None).unwrap();
-    assert_eq!(plan.warnings.len(), 3, "{:?}", plan.warnings);
+    assert_eq!(plan.warnings.len(), 4, "{:?}", plan.warnings);
     assert!(plan.warnings[0].contains("/nonexistent/psp-mint"));
     assert!(plan.warnings[0].contains("/usr/local/bin/psp-mint"));
     let script = &plan.files.last().unwrap().1;
-    for n in ["psp-mint", "esp-mint", "bitcoind"] {
+    for n in ["psp-mint", "esp-mint", "bitcoind", "air_server"] {
         assert!(
             script.contains(&format!("need \"$bin_dir/{n}\" {n}")),
             "{n}"
@@ -837,4 +867,23 @@ fn the_embedded_monitor_is_the_one_in_the_repository() {
         .1;
     assert_eq!(monitor, service::HEALTH_MONITOR);
     assert!(monitor.starts_with("#!/bin/sh\n"));
+}
+
+#[test]
+fn the_log_limits_reach_the_logrotate_file() {
+    let dir = scratch("logrotate");
+    let logrotate = |service: &str| -> String {
+        let spi = load_os(&dir, &config_text(&dir, "regtest", "", service), false, &[]).unwrap();
+        let plan = service::plan(&spi, None).unwrap();
+        plan.files
+            .into_iter()
+            .find(|(n, _)| n == "logrotate-sp-mint")
+            .unwrap()
+            .1
+    };
+    assert!(
+        logrotate("log_keep = 3\nlog_max_size_mb = 20").contains("    maxsize 20M\n    rotate 3\n")
+    );
+    // Left out, the defaults.
+    assert!(logrotate("").contains("    maxsize 50M\n    rotate 4\n"));
 }

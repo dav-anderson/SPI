@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Written when an upgrade is scheduled with spi upgrade (at a time, or in
+         a number of hours or minutes). It runs once, asks nothing (the question
+         was answered when it was scheduled), and removes itself when it is
+         done. spi upgrade cancel removes it too. -->
+    <key>Label</key>
+    <string>org.servicepoints.upgrade</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{home}}</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{exe}}</string>
+        <string>--dir</string>
+        <string>{{dir}}</string>
+        <string>--config</string>
+        <string>{{config}}</string>
+        <string>upgrade</string>
+        <string>run-scheduled</string>
+    </array>
+    <!-- The due time, on the local clock. RunAtLoad runs it at boot too (and
+         when it is loaded, when it finds it is not yet due and does nothing);
+         it skips itself when it is later than the allowed lateness. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Month</key>
+        <integer>{{month}}</integer>
+        <key>Day</key>
+        <integer>{{day}}</integer>
+        <key>Hour</key>
+        <integer>{{hour}}</integer>
+        <key>Minute</key>
+        <integer>{{minute}}</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{{log_dir}}/spi-upgrade.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{log_dir}}/spi-upgrade.log</string>
+</dict>
+</plist>

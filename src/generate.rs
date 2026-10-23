@@ -6,6 +6,11 @@
 //! `[psp.settings]` or `[esp.settings]` is copied as it is, so a mint setting
 //! never has to be learnt by spi. A key that spi names cannot also be set under
 //! `settings`: that would be two places for one value, and is refused.
+//!
+//! The same goes for the AIR server (its settings become the environment it is
+//! started with, `air_env`, and the mints' `air.server` and `air.host`, so the
+//! mints always point at the server spi runs) and for the SPI's own
+//! ecash-wallet (`render_wallet`).
 
 use toml::{Table, Value};
 
@@ -25,12 +30,20 @@ fn named(which: Which) -> &'static [&'static [&'static str]] {
             &["bitcoin", "wallet"],
             &["bitcoin", "cookie"],
             &["server", "bind"],
+            &["air", "server"],
+            &["air", "host"],
+            &["settle", "reconciliation_window_days"],
+            &["burn", "enabled"],
+            &["burn", "threshold_psp"],
+            &["burn", "balance_file"],
         ],
         Which::Esp => &[
             &["server", "bind"],
             &["server", "admin_bind"],
             &["server", "network"],
             &["psp", "url"],
+            &["air", "server"],
+            &["air", "host"],
         ],
     }
 }
@@ -77,9 +90,10 @@ pub fn table(spi: &Spi, which: Which) -> Result<Table, String> {
                 which.env_prefix().to_lowercase(),
                 path.join("."),
                 match which {
-                    Which::Psp => "network, [bitcoind] and [psp] bind",
+                    Which::Psp =>
+                        "network, [bitcoind], [air] name and host, and [psp] bind, reconciliation_window_days, burn, burn_threshold_psp and burn_balance_file",
                     Which::Esp =>
-                        "network, [esp] bind and admin_bind; the PSP URL follows [psp] bind",
+                        "network, [air] name and host, [esp] bind and admin_bind; the PSP URL follows [psp] bind",
                 }
             ));
         }
@@ -96,6 +110,31 @@ pub fn table(spi: &Spi, which: Which) -> Result<Table, String> {
                 s(&spi.cookie.display().to_string()),
             );
             put(&mut t, &["server", "bind"], s(&m.bind));
+            if let Some(days) = spi.reconciliation_window_days {
+                put(
+                    &mut t,
+                    &["settle", "reconciliation_window_days"],
+                    Value::Integer(days as i64),
+                );
+            }
+            // Written even when off, so that the file says that nothing the
+            // PSP is paid is burned.
+            put(&mut t, &["burn", "enabled"], Value::Boolean(spi.burn));
+            put(
+                &mut t,
+                &["burn", "threshold_psp"],
+                Value::Integer(spi.burn_threshold_psp as i64),
+            );
+            // Where spi publishes the SPI wallet's balance, which the threshold
+            // is measured against: written whenever burning is on, so that the
+            // file psp-mint reads is the file spi writes.
+            if spi.burn {
+                put(
+                    &mut t,
+                    &["burn", "balance_file"],
+                    s(&spi.balance_figure_file().display().to_string()),
+                );
+            }
         }
         Which::Esp => {
             put(&mut t, &["server", "bind"], s(&m.bind));
@@ -106,7 +145,79 @@ pub fn table(spi: &Spi, which: Which) -> Result<Table, String> {
             put(&mut t, &["psp", "url"], s(&spi.url(Which::Psp)));
         }
     }
+    // Both mints reach wallets through the AIR server spi runs.
+    if let Some(name) = &spi.air.name {
+        put(&mut t, &["air", "server"], s(name));
+        put(&mut t, &["air", "host"], s(&spi.air.host));
+    }
     Ok(t)
+}
+
+/// The keys spi sets in the ecash-wallet's `config.toml`.
+const WALLET_NAMED: &[&[&str]] = &[
+    &["air", "server"],
+    &["air", "host"],
+    &["air", "psp_did"],
+    &["air", "esp_did"],
+];
+
+/// The content of the ecash-wallet's settings file. `psp_did` and `esp_did` are
+/// the mints' DIDs, when they are known (see `commands::did_of`).
+pub fn wallet_table(
+    spi: &Spi,
+    psp_did: Option<&str>,
+    esp_did: Option<&str>,
+) -> Result<Table, String> {
+    let mut t = spi.wallet_settings.settings.clone();
+    for path in WALLET_NAMED {
+        if has_path(&t, path) {
+            return Err(format!(
+                "wallet.settings.{} is set by spi from spi.toml: remove it there and set it where spi names it ([air] name and host, [psp] did, [esp] did)",
+                path.join(".")
+            ));
+        }
+    }
+    let s = |v: &str| Value::String(v.to_string());
+    if let Some(name) = &spi.air.name {
+        put(&mut t, &["air", "server"], s(name));
+        put(&mut t, &["air", "host"], s(&spi.air.host));
+    }
+    if let Some(d) = psp_did {
+        put(&mut t, &["air", "psp_did"], s(d));
+    }
+    if let Some(d) = esp_did {
+        put(&mut t, &["air", "esp_did"], s(d));
+    }
+    Ok(t)
+}
+
+/// The ecash-wallet's settings file text.
+pub fn render_wallet(
+    spi: &Spi,
+    psp_did: Option<&str>,
+    esp_did: Option<&str>,
+) -> Result<String, String> {
+    let t = wallet_table(spi, psp_did, esp_did)?;
+    let body = toml::to_string(&t).map_err(|e| format!("cannot write ecash-wallet: {e}"))?;
+    Ok(format!("{HEADER}\n{body}"))
+}
+
+/// The environment the AIR server is started with. `service` says whether it
+/// is the service's layout (`[service]` folders) or `spi start`'s.
+pub fn air_env(spi: &Spi, service: bool) -> Vec<(String, String)> {
+    let a = &spi.air;
+    let mut env = vec![
+        ("AIR_SECRET_FILE".to_string(), spi.air_identity(service)),
+        ("AIR_STORAGE".to_string(), spi.air_storage(service)),
+        ("AIR_WS_ADDR".to_string(), a.ws_addr.clone()),
+        ("AIR_HEALTH_ADDR".to_string(), a.health_addr.clone()),
+    ];
+    if let (Some(addr), Some(cert), Some(key)) = (&a.tls_addr, &a.tls_cert, &a.tls_key) {
+        env.push(("AIR_TLS_ADDR".to_string(), addr.clone()));
+        env.push(("AIR_TLS_CERT".to_string(), cert.clone()));
+        env.push(("AIR_TLS_KEY".to_string(), key.clone()));
+    }
+    env
 }
 
 /// The file text: the header, then the settings.

@@ -1,0 +1,44 @@
+# Written by `spi install` from spi.toml. Don't edit: change spi.toml and run
+# `spi install` again, which writes this file again. Not written when [air]
+# manage is false.
+[Unit]
+Description=Service Points AIR server (air_server): the mailbox the mints and the wallets reach each other through
+After=network-online.target
+Wants=network-online.target
+# Keep trying however many times it fails.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{user}}
+Group={{group}}
+# The settings: KEY=VALUE lines that spi writes from spi.toml (AIR_SECRET_FILE,
+# AIR_STORAGE, AIR_WS_ADDR, AIR_HEALTH_ADDR, and the TLS ones when they are set).
+EnvironmentFile={{etc_dir}}/air-server.env
+ExecStart={{bin_dir}}/air_server
+
+# Start again when it exits with an error or is killed.
+Restart=on-failure
+RestartSec=5
+
+# A stop sends SIGTERM. air_server keeps its sessions in its database, so the
+# mints' and wallets' sessions come back when it starts again.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# The only places it may write: its database and its log.
+ReadWritePaths={{air_data_dir}} {{log_dir}}
+StandardOutput=append:{{log_dir}}/air_server.log
+StandardError=append:{{log_dir}}/air_server.log
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome={{protect_home}}
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

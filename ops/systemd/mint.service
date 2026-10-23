@@ -17,6 +17,12 @@ Group={{group}}
 EnvironmentFile={{etc_dir}}/{{name}}.env
 EnvironmentFile={{etc_dir}}/{{name}}.secret.env
 ExecStart={{bin_dir}}/{{name}} serve
+# `systemctl reload` sends SIGHUP: the mint reads its settings file again and
+# applies every setting that can change while it runs, with no stop. A setting
+# that cannot (the mint's README marks each one "needs a restart") waits until
+# the mint is restarted, which is a brief downtime: `spi restart` warns and asks
+# first. A live snapshot is SIGUSR1 (`spi snapshot`).
+ExecReload=/bin/kill -HUP $MAINPID
 
 # Start again when it exits with an error or is killed. The delay grows from 5 s
 # to 5 min. RestartSteps and RestartMaxDelaySec need systemd 254 or later; an
@@ -26,10 +32,17 @@ RestartSec=5
 RestartSteps=6
 RestartMaxDelaySec=300
 
-# A stop sends SIGTERM. The mint finishes the requests it is answering and exits
-# with status 0; after this long it is killed.
+# A stop sends SIGTERM. The mint finishes the work it is doing and exits with
+# status 0; after TimeoutStopSec it is killed, and a kill is a crash the mint
+# has to recover from. The longest a stop can take, step after step (psp-mint;
+# esp-mint has no scan and is shorter): the scan finishes its current bitcoind
+# call (bitcoin.rpc_timeout_secs, 30 s) + the AIR listener finishes the request
+# it holds (3 replies x air.timeout_secs 10 s = 30 s) + the local API drains
+# (30 s) + the runtime is dropped (5 s) + the watch thread (1 s) = 96 s. 120 s
+# leaves the rest for sled to flush its files and for the process to exit. A
+# usual stop takes a second or two.
 KillSignal=SIGTERM
-TimeoutStopSec=30
+TimeoutStopSec=120
 
 # The only places it may write: its data and its log.
 ReadWritePaths={{data_dir}}/{{name}} {{log_dir}}

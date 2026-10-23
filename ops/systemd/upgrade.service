@@ -1,0 +1,14 @@
+# Written by `spi upgrade --at` or `spi upgrade --in`. It runs once, asks
+# nothing (the question was answered when it was scheduled), and removes itself
+# and its timer when it is done. `spi upgrade cancel` removes it too.
+[Unit]
+Description=Service Points: the scheduled upgrade (spi upgrade)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME={{home}}
+ExecStart={{exe}} --dir {{dir}} --config {{config}} upgrade run-scheduled
+TimeoutStartSec=infinity
+StandardOutput=append:{{log_dir}}/spi-upgrade.log
+StandardError=append:{{log_dir}}/spi-upgrade.log

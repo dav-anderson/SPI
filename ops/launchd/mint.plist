@@ -38,9 +38,17 @@
     </dict>
     <key>ThrottleInterval</key>
     <integer>10</integer>
-    <!-- After a stop signal, wait this long for the mint to finish its requests. -->
+    <!-- After a stop signal (SIGTERM), wait this long before killing the mint; a
+         kill is a crash it has to recover from. The longest a stop can take,
+         step after step (psp-mint; esp-mint has no scan and is shorter): the
+         scan finishes its current bitcoind call (bitcoin.rpc_timeout_secs, 30
+         s), the AIR listener finishes the request it holds (3 replies x
+         air.timeout_secs 10 s = 30 s), the local API drains (30 s), the runtime
+         is dropped (5 s) and the watch thread ends (1 s): 96 s. 120 s leaves
+         the rest for sled to flush its files and for the process to exit. A
+         usual stop takes a second or two. -->
     <key>ExitTimeOut</key>
-    <integer>30</integer>
+    <integer>120</integer>
 
     <key>StandardOutPath</key>
     <string>{{log_dir}}/{{name}}.log</string>

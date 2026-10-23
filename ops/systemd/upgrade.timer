@@ -1,0 +1,16 @@
+# Written by `spi upgrade --at` or `spi upgrade --in`. The time is in UTC, so a
+# change of the zone or of the local clock cannot move it. A machine that was
+# off at that time runs it after it boots (Persistent, OnBootSec); `spi upgrade
+# run-scheduled` then skips it if it is later than the allowed lateness.
+[Unit]
+Description=Service Points: when the scheduled upgrade starts
+
+[Timer]
+OnCalendar={{on_calendar}}
+OnBootSec=2min
+Persistent=true
+AccuracySec=1s
+Unit=sp-upgrade.service
+
+[Install]
+WantedBy=timers.target

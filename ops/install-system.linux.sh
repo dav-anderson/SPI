@@ -38,6 +38,11 @@ need() {
     [ -x "$1" ] || echo "WARNING: $1 is missing: install $2 there before starting the services" >&2
 }
 
+# needfile PATH WHAT: say so if a file that is yours to provide is not there.
+needfile() {
+    [ -e "$1" ] || echo "WARNING: $1 is missing: $2" >&2
+}
+
 # The account: no login, no password, owns the data and the logs.
 if ! getent group "$group" >/dev/null 2>&1; then
     groupadd --system "$group"
@@ -52,6 +57,12 @@ fi
 install -d -m 0750 -o root -g "$group" "$etc_dir"
 install -d -m 0750 -o "$user" -g "$group" "$data_dir" "$log_dir"
 {{folders}}
+
+# The folder `spi` writes the SPI wallet's balance in, for psp-mint's burn
+# threshold ([psp] burn): the group writes it (spi runs as a member), the service
+# user reads it. The setgid bit keeps the files in the group where it applies.
+install -d -m 0770 -o "$user" -g "$group" "$data_dir/spi-share"
+chmod 2770 "$data_dir/spi-share"
 
 {{installs}}
 

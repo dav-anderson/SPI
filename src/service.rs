@@ -1,5 +1,5 @@
-//! The files that run psp-mint, esp-mint and bitcoind as services on a machine
-//! that boots, generated from `spi.toml` and nothing else.
+//! The files that run psp-mint, esp-mint, the AIR server and bitcoind as services
+//! on a machine that boots, generated from `spi.toml` and nothing else.
 //!
 //! `spi install` calls [`plan`], which returns every file as text: the mints'
 //! settings files and env files, the systemd units (Linux) or launchd property
@@ -48,6 +48,9 @@ use crate::{generate, run};
 const MINT_SERVICE: &str = include_str!("../ops/systemd/mint.service");
 const HEALTH_SERVICE: &str = include_str!("../ops/systemd/health.service");
 const BITCOIND_SERVICE: &str = include_str!("../ops/systemd/bitcoind.service");
+const AIR_SERVICE: &str = include_str!("../ops/systemd/air.service");
+const AIR_PLIST: &str = include_str!("../ops/launchd/air.plist");
+const NGINX_AIR: &str = include_str!("../ops/nginx-air.conf");
 const MINT_PLIST: &str = include_str!("../ops/launchd/mint.plist");
 const HEALTH_PLIST: &str = include_str!("../ops/launchd/health.plist");
 const BITCOIND_PLIST: &str = include_str!("../ops/launchd/bitcoind.plist");
@@ -96,7 +99,7 @@ fn protect_home(paths: &[&str]) -> &'static str {
 }
 
 /// A value that may go into a unit, a property list and the script as it is.
-fn plain(what: &str, value: &str) -> Result<(), String> {
+pub fn plain(what: &str, value: &str) -> Result<(), String> {
     let ok = !value.is_empty()
         && value
             .chars()
@@ -213,10 +216,14 @@ pub fn bitcoind_args(spi: &Spi) -> Result<Vec<String>, String> {
     // The cookie is readable by the service group, so that a person who is in
     // it can run `spi install` and `spi status` against this node.
     args.push("-rpccookieperms=group".to_string());
-    if let Some(port) = url_port(&spi.rpc_url) {
-        if port != spi.network.rpc_port() {
-            args.push(format!("-rpcport={port}"));
-        }
+    // The whole log goes to the console (the unit's `bitcoind.log`), which the
+    // logrotate limits cover; bitcoind trims `debug.log` only when it starts.
+    args.push("-nodebuglogfile".to_string());
+    args.push("-printtoconsole".to_string());
+    if let Some(port) = url_port(&spi.rpc_url)
+        && port != spi.network.rpc_port()
+    {
+        args.push(format!("-rpcport={port}"));
     }
     for a in &spi.bitcoind_args {
         if a == "-daemon" || a.starts_with("-daemon=") {
@@ -235,6 +242,15 @@ pub fn bitcoind_args(spi: &Spi) -> Result<Vec<String>, String> {
 /// to know about that.
 pub fn service_view(spi: &Spi, warnings: &mut Vec<String>, notes: &mut Vec<String>) -> Spi {
     let mut view = spi.clone();
+    // psp-mint reads the wallet's balance figure from the folder the script
+    // makes for `spi` to write in, unless the setting names another.
+    if spi.burn && spi.burn_balance_file.is_none() {
+        view.burn_balance_file = Some(format!(
+            "{}/spi-share/{}",
+            spi.service.data_dir,
+            crate::balance_figure::FILE
+        ));
+    }
     let mut derived = false;
     if spi.manage_bitcoind {
         let mut c = PathBuf::from(bitcoind_datadir(spi));
@@ -269,6 +285,26 @@ pub fn service_view(spi: &Spi, warnings: &mut Vec<String>, notes: &mut Vec<Strin
         ));
     }
     view
+}
+
+/// What may be wrong with the AIR settings as the mints and the wallet will use
+/// them, which is not an error of the settings alone.
+pub fn air_warnings(spi: &Spi) -> Vec<String> {
+    let mut out = Vec::new();
+    if spi.air.name.is_none() {
+        out.push(
+            "[air] name is not set, so the generated psp-mint and esp-mint files have no air.server and air.host, and neither mint can start (psp-mint refuses to start without them). Set [air] name to the AIR server's public key (66 hex characters)".into(),
+        );
+    }
+    let local = ["127.0.0.1", "localhost", "::1"].contains(&spi.air.host.as_str());
+    let port = spi.air.ws_addr.rsplit(':').next().unwrap_or("");
+    if spi.air.manage && local && port != "5702" {
+        out.push(format!(
+            "the mints dial port 5702 of air.host ({}), but air.ws_addr is {}: they will not reach the AIR server unless something forwards 5702 to it",
+            spi.air.host, spi.air.ws_addr
+        ));
+    }
+    out
 }
 
 fn env_file(spi: &Spi, which: Which) -> String {
@@ -309,10 +345,11 @@ fn secret_file(spi: &Spi, which: Which) -> String {
 }
 
 fn logrotate(spi: &Spi) -> String {
+    let svc = &spi.service;
     format!(
-        "# Written by `spi install`. copytruncate is needed because the mints keep the file open.\n\
-         {}/*.log {{\n    weekly\n    rotate 8\n    compress\n    missingok\n    copytruncate\n}}\n",
-        spi.service.log_dir
+        "# Written by `spi install` from [service] log_keep and log_max_size_mb. copytruncate is needed because the mints keep the file open.\n\
+         {}/*.log {{\n    weekly\n    maxsize {}M\n    rotate {}\n    compress\n    missingok\n    copytruncate\n}}\n",
+        svc.log_dir, svc.log_max_size_mb, svc.log_keep
     )
 }
 
@@ -356,12 +393,82 @@ fn install_line(
     format!("{verb} {mode} {owner} {group} {source} {dest}")
 }
 
+/// The health monitor's files for one service: its settings file (written once,
+/// then yours) and its unit or property list. `base` is the service's unit name
+/// (`psp-mint`, `sp-air-server`), `url` what the monitor asks.
+fn health_entry(
+    spi: &Spi,
+    ops: Option<&Path>,
+    base: &str,
+    url: &str,
+    files: &mut Vec<(String, String)>,
+    installs: &mut Vec<String>,
+) -> Result<(), String> {
+    let svc = &spi.service;
+    let mac = spi.mac;
+    let (rel_dir, root_group) = if mac {
+        ("launchd", "wheel")
+    } else {
+        ("systemd", "root")
+    };
+    let health_paths = [
+        svc.bin_dir.as_str(),
+        svc.etc_dir.as_str(),
+        svc.log_dir.as_str(),
+    ];
+    let mut vars = common_vars(spi, protect_home(&health_paths));
+    vars.push(("name", base.to_string()));
+    vars.push(("health_url", url.to_string()));
+    vars.push((
+        "restart_cmd",
+        if mac {
+            format!("launchctl kickstart -k system/org.servicepoints.{base}")
+        } else {
+            format!("systemctl restart {base}.service")
+        },
+    ));
+    let conf = format!("{base}-health.conf");
+    files.push((conf.clone(), expand(&conf, HEALTH_CONF, &vars, false)?));
+    installs.push(install_line(
+        "keep",
+        "0644",
+        "root",
+        root_group,
+        &format!("\"$here/{conf}\""),
+        &format!("\"$etc_dir/{conf}\""),
+    ));
+    let file = if mac {
+        format!("org.servicepoints.{base}-health.plist")
+    } else {
+        format!("{base}-health.service")
+    };
+    let (embedded, what) = if mac {
+        (HEALTH_PLIST, "the health monitor property list")
+    } else {
+        (HEALTH_SERVICE, "the health monitor unit")
+    };
+    let text = template(embedded, ops, &format!("{rel_dir}/{file}"))?;
+    files.push((
+        file.clone(),
+        expand(&format!("{what} {file}"), &text, &vars, mac)?,
+    ));
+    installs.push(install_line(
+        "put",
+        "0644",
+        "root",
+        root_group,
+        &format!("\"$here/{file}\""),
+        &format!("\"$unit_dir/{file}\""),
+    ));
+    Ok(())
+}
+
 /// Every file for the service: see the module documentation.
 pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
-    if let Some(dir) = ops {
-        if !dir.is_dir() {
-            return Err(format!("--ops {} is not a folder", dir.display()));
-        }
+    if let Some(dir) = ops
+        && !dir.is_dir()
+    {
+        return Err(format!("--ops {} is not a folder", dir.display()));
     }
     let svc = &spi.service;
     let mac = spi.mac;
@@ -397,6 +504,7 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
     };
     let mut notes = Vec::new();
     let view = service_view(spi, &mut warnings, &mut notes);
+    warnings.extend(air_warnings(spi));
 
     let (unit_dir, rel_dir) = if mac {
         ("/Library/LaunchDaemons", "launchd")
@@ -425,6 +533,9 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
     ];
     if manage {
         binaries.push(("bitcoind", spi.bitcoind_bin.as_str()));
+    }
+    if spi.air.manage {
+        binaries.push(("air_server", spi.air.bin.as_str()));
     }
     installs.push("# The binaries.".into());
     for (name, spec) in binaries {
@@ -488,10 +599,13 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
         let (description, wait) = match which {
             Which::Psp => (
                 "the PSP mint (Bitcoin purchases to PSP notes)",
-                if manage && !mac {
-                    "network-online.target sp-bitcoind.service"
-                } else {
-                    "network-online.target"
+                match (manage && !mac, spi.air.manage && !mac) {
+                    (true, true) => {
+                        "network-online.target sp-bitcoind.service sp-air-server.service"
+                    }
+                    (true, false) => "network-online.target sp-bitcoind.service",
+                    (false, true) => "network-online.target sp-air-server.service",
+                    (false, false) => "network-online.target",
                 },
             ),
             Which::Esp => (
@@ -524,51 +638,14 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
         ));
 
         if svc.health {
-            let health_paths = [
-                svc.bin_dir.as_str(),
-                svc.etc_dir.as_str(),
-                svc.log_dir.as_str(),
-            ];
-            let mut vars = common_vars(spi, protect_home(&health_paths));
-            vars.push(("name", name.to_string()));
-            vars.push(("health_url", format!("{}/health", spi.url(which))));
-            vars.push((
-                "restart_cmd",
-                if mac {
-                    format!("launchctl kickstart -k system/org.servicepoints.{name}")
-                } else {
-                    format!("systemctl restart {name}.service")
-                },
-            ));
-            let conf = format!("{name}-health.conf");
-            files.push((conf.clone(), expand(&conf, HEALTH_CONF, &vars, false)?));
-            installs.push(install_line(
-                "keep",
-                "0644",
-                "root",
-                root_group,
-                &format!("\"$here/{conf}\""),
-                &format!("\"$etc_dir/{conf}\""),
-            ));
-            let file = unit_name(&format!("{name}-health"));
-            let (embedded, what) = if mac {
-                (HEALTH_PLIST, "the health monitor property list")
-            } else {
-                (HEALTH_SERVICE, "the health monitor unit")
-            };
-            let text = template(embedded, ops, &format!("{rel_dir}/{file}"))?;
-            files.push((
-                file.clone(),
-                expand(&format!("{what} {file}"), &text, &vars, mac)?,
-            ));
-            installs.push(install_line(
-                "put",
-                "0644",
-                "root",
-                root_group,
-                &format!("\"$here/{file}\""),
-                &format!("\"$unit_dir/{file}\""),
-            ));
+            health_entry(
+                spi,
+                ops,
+                name,
+                &format!("{}/health", spi.url(which)),
+                &mut files,
+                &mut installs,
+            )?;
         }
     }
 
@@ -634,8 +711,118 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
         ));
     }
 
+    // The AIR server.
+    let air_base = if mac { "air-server" } else { "sp-air-server" };
+    let mut air_units: Vec<String> = Vec::new();
+    if spi.air.manage {
+        let env = generate::air_env(spi, true);
+        for (key, value) in &env {
+            plain(&format!("the AIR server's {key}"), value)?;
+        }
+        let storage = spi.air_storage(true);
+        let identity = spi.air_identity(true);
+        let air_data = Path::new(&storage)
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("{}/air-server", svc.data_dir));
+        plain("the AIR server's data folder (air.storage)", &air_data)?;
+        folders.push(if air_data == format!("{}/air-server", svc.data_dir) {
+            "\"$data_dir/air-server\"".to_string()
+        } else {
+            sh_word(&air_data)
+        });
+        let env_text = format!(
+            "# Written by `spi install` from spi.toml. Don't edit: change spi.toml and run\n\
+             # `spi install` again, which writes this file again.\n\
+             # KEY=VALUE, one a line, no export.\n{}",
+            env.iter()
+                .map(|(k, v)| format!("{k}={v}\n"))
+                .collect::<String>()
+        );
+        files.push(("air-server.env".into(), env_text));
+        installs.push("# The AIR server.".into());
+        installs.push(install_line(
+            "put",
+            "0640",
+            "root",
+            "\"$group\"",
+            "\"$here/air-server.env\"",
+            "\"$etc_dir/air-server.env\"",
+        ));
+        installs.push(format!(
+            "needfile {} {}",
+            sh_word(&identity),
+            sh_word(
+                "the AIR server's identity (AIR_SECRET_FILE): you make it, and keep an offline copy; spi does neither"
+            )
+        ));
+        let paths = [
+            svc.bin_dir.as_str(),
+            air_data.as_str(),
+            svc.log_dir.as_str(),
+            identity.as_str(),
+        ];
+        let mut vars = common_vars(spi, protect_home(&paths));
+        vars.push(("name", air_base.to_string()));
+        vars.push(("air_data_dir", air_data.clone()));
+        let file = unit_name(air_base);
+        let (embedded, what) = if mac {
+            (AIR_PLIST, "the AIR server property list")
+        } else {
+            (AIR_SERVICE, "the AIR server unit")
+        };
+        let text = template(embedded, ops, &format!("{rel_dir}/{file}"))?;
+        files.push((
+            file.clone(),
+            expand(&format!("{what} {file}"), &text, &vars, mac)?,
+        ));
+        installs.push(install_line(
+            "put",
+            "0644",
+            "root",
+            root_group,
+            &format!("\"$here/{file}\""),
+            &format!("\"$unit_dir/{file}\""),
+        ));
+        air_units.push(air_base.to_string());
+        if svc.health {
+            health_entry(
+                spi,
+                ops,
+                air_base,
+                &format!("http://{}/", spi.air.health_addr),
+                &mut files,
+                &mut installs,
+            )?;
+            air_units.push(format!("{air_base}-health"));
+        }
+        notes.push(format!(
+            "The AIR server's identity is {identity}: you make it and you keep an offline copy of it, spi does neither. Losing it changes the server's name, and then every mint and wallet needs the new one ([air] name)"
+        ));
+        if let (Some(name), Some(cert), Some(key)) = (
+            &spi.air.public_name,
+            &spi.air.public_cert,
+            &spi.air.public_key,
+        ) {
+            let vars = vec![
+                ("public_name", name.clone()),
+                ("public_cert", cert.clone()),
+                ("public_key", key.clone()),
+                ("ws_addr", spi.air.ws_addr.clone()),
+            ];
+            files.push((
+                "nginx-air-server.conf".into(),
+                expand("the nginx file", NGINX_AIR, &vars, false)?,
+            ));
+            notes.push(
+                "nginx-air-server.conf is for nginx: spi does not install it. Put it where your nginx reads its sites, check it with `nginx -t` and reload nginx".into(),
+            );
+        }
+    }
+
     // How the services are started, in order. bitcoind comes first and alone,
-    // and the wallet is set up once it answers, so psp-mint finds it.
+    // and the wallet is set up once it answers, so psp-mint finds it. Then the
+    // AIR server, which the mints dial, then the mints.
     let mut mint_units: Vec<String> = Vec::new();
     for which in [Which::Psp, Which::Esp] {
         mint_units.push(which.name().to_string());
@@ -664,6 +851,9 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
         start_units.extend(start_lines(&[bitcoind_base.to_string()]));
         start_units
             .push("spi install --no-service-files   (again, once bitcoind answers: it sets up the wallet)".into());
+    }
+    if !air_units.is_empty() {
+        start_units.extend(start_lines(&air_units));
     }
     start_units.extend(start_lines(&mint_units));
 

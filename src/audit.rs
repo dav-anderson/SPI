@@ -9,6 +9,13 @@
 //!   two add up to `outstanding`, and a reply where they do not is refused,
 //!   unless esp-mint says it has requests it has not finished
 //!   (`requests_unfinished`), which it has not counted yet.
+//! - **PSP paid to the SPI** (psp-mint's `paid`, with `burned` and `reissued`
+//!   when it reports them): what spends of PSP paid to the SPI itself. With
+//!   burning off all of it is reissued to the SPI's wallet; with it on, what is
+//!   above the threshold is burned, and `burned` is the SPI's revenue in PSP.
+//! - **The SPI's wallet** (`ecash-wallet balance`): what the SPI holds, shown
+//!   beside what the mints owe. It is not subtracted from anything. If the
+//!   wallet cannot be read the audit still prints and says so.
 //! - **FSP is not counted.** It is backed by ESP the FSP mint holds, which is
 //!   already in the ESP figure; counting it again would count it twice.
 //!
@@ -54,7 +61,27 @@ pub struct Report {
     pub esp_total: Line,
     /// PSP outstanding plus all ESP outstanding.
     pub total: Line,
+    /// What psp-mint reports of the PSP it was paid, when it reports it.
+    pub psp_revenue: Option<Revenue>,
+    /// What the SPI's own wallet holds, when it could be read.
+    pub wallet: Option<WalletReport>,
     pub warnings: Vec<String>,
+}
+
+/// psp-mint's `paid`, `burned` and `reissued`, in PSP.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Revenue {
+    pub paid: String,
+    /// `None` from a psp-mint that does not report it.
+    pub burned: Option<String>,
+    pub reissued: Option<String>,
+}
+
+/// The SPI wallet's balance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WalletReport {
+    pub psp: Line,
+    pub esp: Line,
 }
 
 /// What the two replies hold.
@@ -130,6 +157,29 @@ pub fn figures(psp: &Value, esp: &Value) -> Result<Figures, String> {
     })
 }
 
+/// What psp-mint's `GET /audit` says it was paid. `None` when it has no `paid`.
+pub fn revenue(psp: &Value) -> Result<Option<Revenue>, String> {
+    let Some(paid) = optional(psp, "paid", "psp-mint")? else {
+        return Ok(None);
+    };
+    Ok(Some(Revenue {
+        paid: paid.to_string(),
+        burned: optional(psp, "burned", "psp-mint")?.map(|n| n.to_string()),
+        reissued: optional(psp, "reissued", "psp-mint")?.map(|n| n.to_string()),
+    }))
+}
+
+/// The wallet's balance as the report shows it.
+pub fn wallet_report(psp: u128, esp: u128) -> Result<WalletReport, String> {
+    let scaled = psp
+        .checked_mul(ESP_PER_PSP_U)
+        .ok_or("the wallet's PSP is too large to add up (it overflows 128 bits)")?;
+    Ok(WalletReport {
+        psp: line("PSP", psp, scaled),
+        esp: line("ESP", esp, esp),
+    })
+}
+
 /// `scaled` (ESP units) as a decimal with `digits` places after the point.
 fn decimal(scaled: u128, per: u128) -> String {
     let width = per.to_string().len() - 1;
@@ -165,6 +215,8 @@ pub fn report(f: &Figures) -> Result<Report, String> {
         ));
     }
     Ok(Report {
+        psp_revenue: None,
+        wallet: None,
         psp_outstanding: line("PSP", f.psp, psp_scaled),
         esp_matured: f.esp_matured.map(|m| line("ESP", m, m)),
         esp_unmatured: f.esp_unmatured.map(|u| line("ESP", u, u)),
@@ -200,6 +252,19 @@ pub fn render(r: &Report, network: &str) -> String {
     }
     row(&mut out, "ESP total", &r.esp_total);
     row(&mut out, "TOTAL", &r.total);
+    if let Some(v) = &r.psp_revenue {
+        let _ = writeln!(
+            out,
+            "  PSP paid to the SPI: {} PSP, of which burned (revenue) {}, reissued to the SPI wallet {}",
+            v.paid,
+            v.burned.as_deref().unwrap_or("not reported"),
+            v.reissued.as_deref().unwrap_or("not reported"),
+        );
+    }
+    if let Some(w) = &r.wallet {
+        row(&mut out, "SPI wallet PSP", &w.psp);
+        row(&mut out, "SPI wallet ESP", &w.esp);
+    }
     for w in &r.warnings {
         let _ = writeln!(out, "WARNING: {w}");
     }

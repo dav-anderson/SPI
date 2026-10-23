@@ -9,7 +9,8 @@
     <string>org.servicepoints.bitcoind</string>
 
     <!-- Not root. In the foreground: no -daemon, so launchd watches bitcoind
-         itself. Its own log is debug.log in its data folder. -->
+         itself. spi passes -nodebuglogfile -printtoconsole, so its whole log goes
+         to bitcoind.log below. -->
     <key>UserName</key>
     <string>{{user}}</string>
     <key>GroupName</key>

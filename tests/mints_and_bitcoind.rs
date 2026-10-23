@@ -10,7 +10,7 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::{load, scratch, stub};
+use common::{load, scratch, stub, wallet_holding};
 use serde_json::{Value, json};
 use spi::bitcoind::{Chain, Node, Rpc};
 use spi::commands::{self, InstallOptions, ServiceFiles};
@@ -98,10 +98,17 @@ fn mint(health: u16, health_body: Value, audit_body: Value) -> String {
     addr
 }
 
+/// An AIR server's health listener: 200 and a bare `ok`.
+fn air_health() -> String {
+    let (addr, _) = stub(|_, _, _| (200, "ok".to_string()));
+    addr
+}
+
 fn config(dir: &std::path::Path, btc: &str, psp: &str, esp: &str) -> spi::config::Spi {
     let text = format!(
-        "network = \"regtest\"\n[bitcoind]\nrpc_url = \"http://{btc}\"\ncookie = \"{}\"\n[psp]\nbind = \"{psp}\"\n[esp]\nbind = \"{esp}\"\nadmin_bind = \"127.0.0.1:1\"\n",
-        cookie_in(dir)
+        "network = \"regtest\"\n[bitcoind]\nrpc_url = \"http://{btc}\"\ncookie = \"{}\"\n[air]\nhealth_addr = \"{}\"\n[psp]\nbind = \"{psp}\"\n[esp]\nbind = \"{esp}\"\nadmin_bind = \"127.0.0.1:1\"\n",
+        cookie_in(dir),
+        air_health()
     );
     load(dir, Some(&text)).unwrap()
 }
@@ -128,7 +135,7 @@ fn audit_reads_both_mints_and_itemizes_matured_and_unmatured() {
         }),
     );
     let spi = config(&dir, "127.0.0.1:1", &psp, &esp);
-    let r = commands::audit(&spi).unwrap();
+    let r = commands::audit(&spi, &wallet_holding(5, 0)).unwrap();
     assert_eq!(r.psp_outstanding.units, "60");
     assert_eq!(r.psp_outstanding.usd, "6.000000000000");
     assert_eq!(r.esp_matured.as_ref().unwrap().psp, "5.00000000000");
@@ -149,7 +156,7 @@ fn audit_without_the_split_gives_the_total_and_says_so() {
         json!({"outstanding": 100_000_000_000u64}),
     );
     let spi = config(&dir, "127.0.0.1:1", &psp, &esp);
-    let r = commands::audit(&spi).unwrap();
+    let r = commands::audit(&spi, &wallet_holding(5, 0)).unwrap();
     assert!(r.esp_matured.is_none());
     assert_eq!(r.esp_total.psp, "1.00000000000");
     assert_eq!(r.total.psp, "11.00000000000");
@@ -166,10 +173,18 @@ fn audit_refuses_a_mint_on_another_network_a_bad_status_and_a_mint_that_is_down(
         json!({"outstanding": 1, "network": "main"}),
     );
     let spi = config(&dir, "127.0.0.1:1", &other, &good);
-    assert!(commands::audit(&spi).unwrap_err().contains("is on main"));
+    assert!(
+        commands::audit(&spi, &wallet_holding(5, 0))
+            .unwrap_err()
+            .contains("is on main")
+    );
     // Nothing listens on port 1.
     let spi = config(&dir, "127.0.0.1:1", &good, "127.0.0.1:1");
-    assert!(commands::audit(&spi).unwrap_err().contains("cannot reach"));
+    assert!(
+        commands::audit(&spi, &wallet_holding(5, 0))
+            .unwrap_err()
+            .contains("cannot reach")
+    );
 }
 
 #[test]
@@ -191,13 +206,13 @@ fn status_reports_each_part_and_a_network_mismatch() {
     let parts = commands::status(&spi);
     assert_eq!(
         parts.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-        ["bitcoind", "psp-mint", "esp-mint"]
+        ["bitcoind", "air_server", "psp-mint", "esp-mint"]
     );
     assert!(
         !parts[0].ok && parts[0].detail.contains("NOT loaded"),
         "{parts:?}"
     );
-    assert!(parts[1].ok && parts[2].ok);
+    assert!(parts[1].ok && parts[2].ok && parts[3].ok);
 
     let (btc, loaded, _) = bitcoind("regtest", &[]);
     loaded.lock().unwrap().push("psp-regtest".into());
@@ -216,8 +231,8 @@ fn status_reports_each_part_and_a_network_mismatch() {
     let spi = config(&dir, &btc_main, &wrong, &sick);
     let parts = commands::status(&spi);
     assert!(!parts[0].ok && parts[0].detail.contains("config says regtest"));
-    assert!(!parts[1].ok && parts[1].detail.contains("network main"));
-    assert!(!parts[2].ok && parts[2].detail.contains("locks poisoned"));
+    assert!(!parts[2].ok && parts[2].detail.contains("network main"));
+    assert!(!parts[3].ok && parts[3].detail.contains("locks poisoned"));
 }
 
 /// Install without service files: these tests are about bitcoind and the
@@ -366,14 +381,14 @@ fn syncing_makes_psp_not_ready_and_the_service_degraded_and_says_why() {
         parts[0].detail
     );
     // The PSP mint answers /health, but is not ready, and the reason is the node.
-    assert_eq!((parts[1].state.as_str(), parts[1].ok), ("not_ready", false));
+    assert_eq!((parts[2].state.as_str(), parts[2].ok), ("not_ready", false));
     assert!(
-        parts[1].detail.contains("NOT READY: bitcoind syncing 63%"),
+        parts[2].detail.contains("NOT READY: bitcoind syncing 63%"),
         "{}",
-        parts[1].detail
+        parts[2].detail
     );
-    // The ESP mint is up.
-    assert!(parts[2].ok);
+    // The AIR server and the ESP mint are up.
+    assert!(parts[1].ok && parts[3].ok);
     assert_eq!(commands::service_state(&parts), "degraded");
     assert!(!parts[0].detail.contains("unreachable"));
 }
@@ -405,9 +420,9 @@ fn unreachable_is_reported_apart_from_syncing() {
         parts[0].detail
     );
     assert!(!parts[0].detail.contains("syncing"));
-    assert_eq!(parts[1].state, "not_ready");
-    assert!(parts[1].detail.contains("NOT READY: bitcoind unreachable"));
-    assert!(!parts[1].detail.contains("syncing"));
+    assert_eq!(parts[2].state, "not_ready");
+    assert!(parts[2].detail.contains("NOT READY: bitcoind unreachable"));
+    assert!(!parts[2].detail.contains("syncing"));
     assert_eq!(commands::service_state(&parts), "down");
 
     // A cookie that cannot be read is also unreachable, not syncing.
@@ -561,22 +576,15 @@ fn start_does_not_start_a_bitcoind_that_is_already_answering_or_one_it_may_not_m
 #[test]
 fn the_bitcoind_command_line_follows_the_network_and_the_config() {
     let dir = scratch("cmdline");
+    let line = |spi: &spi::config::Spi| run::bitcoind_command_line(spi).join(" ");
     let spi = load(&dir, None).unwrap();
-    assert_eq!(run::bitcoind_command_line(&spi), ["-regtest", "-daemon"]);
+    assert_eq!(line(&spi), "-regtest -nodebuglogfile -printtoconsole");
     let spi = load(&dir, Some("network = \"main\"")).unwrap();
-    assert_eq!(run::bitcoind_command_line(&spi), ["-daemon"]);
+    assert_eq!(line(&spi), "-nodebuglogfile -printtoconsole");
     let text = "network = \"signet\"\n[bitcoind]\ndatadir = \"/d\"\nargs = [\"-txindex\", \"-dbcache=2000\"]\nmanage = false\nsync_wait_secs = 5\nbin = \"/opt/bitcoind\"";
     let spi = load(&dir, Some(text)).unwrap();
-    assert_eq!(
-        run::bitcoind_command_line(&spi),
-        [
-            "-signet",
-            "-datadir=/d",
-            "-daemon",
-            "-txindex",
-            "-dbcache=2000"
-        ]
-    );
+    let all = "-signet -datadir=/d -nodebuglogfile -printtoconsole -txindex -dbcache=2000";
+    assert_eq!(line(&spi), all);
     assert!(!spi.manage_bitcoind);
     assert_eq!(
         (spi.sync_wait_secs, spi.bitcoind_bin.as_str()),
@@ -592,4 +600,215 @@ fn the_bitcoind_command_line_follows_the_network_and_the_config() {
     ] {
         assert!(all.contains(needle), "{needle} not in {all}");
     }
+}
+
+// ---- the AIR server, the setup steps and the audit's wallet ----
+
+#[test]
+fn status_shows_the_air_server_between_bitcoind_and_the_mints_and_says_when_it_is_down() {
+    let dir = scratch("status-air");
+    let (btc, loaded, _) = bitcoind("regtest", &[]);
+    loaded_wallet(&loaded);
+    let (psp, esp) = healthy_mints();
+    let mut spi = config(&dir, &btc, &psp, &esp);
+    let parts = commands::status(&spi);
+    assert_eq!(parts[1].name, "air_server");
+    assert!(parts[1].ok, "{parts:?}");
+    assert!(
+        parts[1].detail.ends_with(": HTTP 200"),
+        "{}",
+        parts[1].detail
+    );
+    assert_eq!(commands::service_state(&parts), "ok");
+
+    // Nothing listens on port 1.
+    spi.air.health_addr = "127.0.0.1:1".into();
+    let parts = commands::status(&spi);
+    assert!(
+        !parts[1].ok && parts[1].state == "down" && parts[1].detail.contains("cannot reach"),
+        "{parts:?}"
+    );
+    assert_eq!(commands::service_state(&parts), "down");
+
+    // A server spi does not run is still watched, and the line says so.
+    spi.air.manage = false;
+    let parts = commands::status(&spi);
+    assert!(
+        parts[1].detail.ends_with("(not managed by spi)"),
+        "{}",
+        parts[1].detail
+    );
+}
+
+#[test]
+fn setup_lists_the_steps_and_the_spi_is_ready_only_when_the_wallet_holds_psp() {
+    let dir = scratch("setup");
+    let (btc, loaded, _) = bitcoind("regtest", &[]);
+    loaded_wallet(&loaded);
+    let (psp, esp) = healthy_mints();
+    let spi = config(&dir, &btc, &psp, &esp);
+
+    // Everything runs, the wallet is empty.
+    let out = commands::setup(&spi, &wallet_holding(0, 0));
+    let said = out.lines.join("\n");
+    assert!(out.ok, "{said}");
+    for step in ["[x] a. ", "[x] b. ", "[x] c. ", "[x] d. "] {
+        assert!(said.contains(step), "{step} not in\n{said}");
+    }
+    assert!(
+        said.contains("[ ] e. PSP in the SPI wallet: the SPI wallet holds no PSP"),
+        "{said}"
+    );
+    assert!(
+        said.contains("[ ] f. FSP bought from another service, for backups (optional)"),
+        "{said}"
+    );
+    assert!(
+        said.contains("ready: NO, until steps a to e are done"),
+        "{said}"
+    );
+    // Both ways to fund it are printed, with the wallet's own command line.
+    let w = format!(
+        "ecash-wallet --wallet {} --config {} --regtest",
+        dir.join("wallet/wallet.json").display(),
+        dir.join("generated/ecash-wallet.toml").display()
+    );
+    assert!(said.contains(&format!("{w} buy-psp --mint-key")), "{said}");
+    assert!(said.contains("--sync AMOUNT"), "{said}");
+    assert!(said.contains(&format!("{w} claim-psp")), "{said}");
+    assert!(
+        said.contains(&format!(
+            "{w} handoff import STRING-OR-FILE --did-key-file FILE"
+        )),
+        "{said}"
+    );
+
+    // Funded: ready, and no more funding instructions.
+    let out = commands::setup(&spi, &wallet_holding(50, 0));
+    let said = out.lines.join("\n");
+    assert!(said.contains("[x] e. PSP in the SPI wallet: the SPI wallet holds 50 PSP"));
+    assert!(said.contains("ready: yes"), "{said}");
+    assert!(!said.contains("buy-psp"), "{said}");
+
+    // With the AIR server down the wallet is not even asked, and the first
+    // thing to do is to start the programs.
+    let mut down = spi.clone();
+    down.air.health_addr = "127.0.0.1:1".into();
+    let never = common::fake(|bin, _| Err(format!("{bin} must not be run")));
+    let out = commands::setup(&down, &never);
+    let said = out.lines.join("\n");
+    assert!(said.contains("[ ] b. AIR server running"), "{said}");
+    assert!(
+        said.contains("[ ] e. PSP in the SPI wallet: waiting for steps a to d"),
+        "{said}"
+    );
+    assert!(said.contains("Start the programs: `spi start`"), "{said}");
+    assert!(never.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn setup_warns_about_a_fee_that_the_genesis_purchase_would_pay_to_the_spi_itself() {
+    let dir = scratch("setup-fees");
+    let (btc, loaded, _) = bitcoind("regtest", &[]);
+    loaded_wallet(&loaded);
+    let (psp, esp) = healthy_mints();
+    let mut spi = config(&dir, &btc, &psp, &esp);
+    let none = commands::fee_notes(&spi);
+    assert!(none.is_empty(), "{none:?}");
+    spi.psp.settings = "[reconciliation]\nfee = 3\nwrite_fee = 0\n[delivery]\nread_fee = 1\n"
+        .parse()
+        .unwrap();
+    let notes = commands::fee_notes(&spi);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes[0].starts_with("NOTE: psp.settings.reconciliation.fee is 3. "));
+    assert!(notes[1].starts_with("NOTE: psp.settings.delivery.read_fee is 1. "));
+    let out = commands::setup(&spi, &wallet_holding(0, 0));
+    assert!(out.lines.iter().any(|l| l == &notes[0]), "{:?}", out.lines);
+}
+
+#[test]
+fn audit_shows_the_psp_paid_to_the_spi_and_the_spi_wallet_beside_what_the_mints_owe() {
+    let dir = scratch("audit-wallet");
+    let psp = mint(
+        200,
+        json!({"status": "ok", "network": "regtest"}),
+        json!({"outstanding": 60, "paid": 40, "burned": 10, "reissued": 30, "network": "regtest"}),
+    );
+    let esp = mint(
+        200,
+        json!({"status": "ok"}),
+        json!({"outstanding": 100_000_000_000u64}),
+    );
+    let spi = config(&dir, "127.0.0.1:1", &psp, &esp);
+    let r = commands::audit(&spi, &wallet_holding(7, 3)).unwrap();
+    let revenue = r.psp_revenue.as_ref().unwrap();
+    assert_eq!(
+        (
+            revenue.paid.as_str(),
+            revenue.burned.as_deref(),
+            revenue.reissued.as_deref()
+        ),
+        ("40", Some("10"), Some("30"))
+    );
+    let w = r.wallet.as_ref().unwrap();
+    assert_eq!(
+        (w.psp.units.as_str(), w.psp.usd.as_str()),
+        ("7", "0.700000000000")
+    );
+    assert_eq!(
+        (w.esp.units.as_str(), w.esp.psp.as_str()),
+        ("3", "0.00000000003")
+    );
+    // The wallet is beside the mints' figures, not taken from them.
+    assert_eq!(r.total.psp, "61.00000000000");
+    let text = spi::audit::render(&r, "regtest");
+    assert!(
+        text.contains(
+            "PSP paid to the SPI: 40 PSP, of which burned (revenue) 10, reissued to the SPI wallet 30"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("SPI wallet PSP"), "{text}");
+    assert!(text.contains("SPI wallet ESP"), "{text}");
+
+    // A psp-mint that does not report `paid` shows no such line.
+    let old = mint(200, json!({"status": "ok"}), json!({"outstanding": 60}));
+    let spi = config(&dir, "127.0.0.1:1", &old, &esp);
+    let r = commands::audit(&spi, &wallet_holding(7, 3)).unwrap();
+    assert!(r.psp_revenue.is_none());
+    assert!(!spi::audit::render(&r, "regtest").contains("PSP paid to the SPI"));
+}
+
+#[test]
+fn audit_still_prints_when_the_spi_wallet_cannot_be_read_and_says_why() {
+    let dir = scratch("audit-nowallet");
+    let psp = mint(200, json!({"status": "ok"}), json!({"outstanding": 60}));
+    // The ESP stand-in reports the matured / unmatured split, as esp-mint does,
+    // so the only warning here is the one about the wallet.
+    let esp = mint(
+        200,
+        json!({"status": "ok"}),
+        json!({
+            "outstanding": 100_000_000_000u64,
+            "outstanding_matured": 40_000_000_000u64,
+            "outstanding_unmatured": 60_000_000_000u64
+        }),
+    );
+    let spi = config(&dir, "127.0.0.1:1", &psp, &esp);
+    let cannot = common::fake(|_, _| Err("cannot run `ecash-wallet`: not found".into()));
+    let r = commands::audit(&spi, &cannot).unwrap();
+    assert!(r.wallet.is_none());
+    assert_eq!(r.total.psp, "61.00000000000");
+    assert_eq!(
+        r.warnings,
+        ["the SPI wallet's balance was not read: cannot run `ecash-wallet`: not found"]
+    );
+    let failed = common::fake(|_, _| common::ran(1, "", "error: air.psp_did is not set\n"));
+    let r = commands::audit(&spi, &failed).unwrap();
+    assert_eq!(
+        r.warnings,
+        [
+            "the SPI wallet's balance was not read: `ecash-wallet balance` failed: error: air.psp_did is not set"
+        ]
+    );
 }
