@@ -61,6 +61,8 @@ A key that spi sets itself (`bitcoin.network`, `bitcoin.rpc_url`, `bitcoin.walle
 | `spi config show` | The settings in use, where each came from, and the settings passed through. |
 | `spi audit [--json]` | See "Audit". |
 
+A flag a command does not take is refused, naming it, with exit status 2 and before anything is read or written; global flags (`--dir`, `--config`, `--network`) go before the command and each needs a value.
+
 For a machine that starts the mints at boot and restarts them, use the services that `install` writes, not `start`; see "Running as services".
 
 ## Running as services
@@ -177,17 +179,14 @@ spi audit on regtest (10 PSP = 1 USD; FSP not counted)
   PSP outstanding                            60 PSP  =   60.00000000000 PSP  = $6.000000000000
   ESP matured       500000000000 ESP  = 5.00000000000 PSP  = $0.500000000000
   ESP unmatured    1500000000000 ESP  = 15.00000000000 PSP  = $1.500000000000
-  ESP unsplit                  0 ESP  =  0.00000000000 PSP  = $0.000000000000
   ESP total        2000000000000 ESP  = 20.00000000000 PSP  = $2.000000000000
   TOTAL                                      80 PSP  = 80.00000000000 PSP  = $8.000000000000
 ```
 
-The columns are narrower here than in the real output. PSP is in PSP (whole PSP), ESP in ESP units (10^11 to the PSP), and every line is also given in PSP and in USD at **10 PSP = 1 USD**. Matured, unmatured and unsplit ESP all count at full value. **FSP is not counted**: it is backed by ESP the FSP mint holds, which the ESP figure already contains. All sums are exact integers (128-bit, checked: a figure too large to add is an error, not a wrapped number); the PSP and USD decimals are worked out from them. The rate is one constant, `PSP_PER_USD` in `src/audit.rs`, with a comment that **it must match the payout rate**. `--json` prints the same numbers as strings.
+The columns are narrower here than in the real output. PSP is in PSP (whole PSP), ESP in ESP units (10^11 to the PSP), and every line is also given in PSP and in USD at **10 PSP = 1 USD**. Matured and unmatured ESP both count at full value. **FSP is not counted**: it is backed by ESP the FSP mint holds, which the ESP figure already contains. All sums are exact integers (128-bit, checked: a figure too large to add is an error, not a wrapped number); the PSP and USD decimals are worked out from them. The rate is one constant, `PSP_PER_USD` in `src/audit.rs`, with a comment that **it must match the payout rate**. `--json` prints the same numbers as strings.
 
-**The split comes from esp-mint 0.5.0 and later.** Its `GET /audit` gives `outstanding_matured` (redeemable-after days that have come), `outstanding_unmatured` (days still ahead) and `outstanding_unsplit` (ESP issued before esp-mint kept the per-day ledger, whose day it does not know), which add up to `outstanding`; `spi audit` checks that and refuses a reply where they do not. Reading it:
+**The split comes from esp-mint 0.5.0 and later.** Its `GET /audit` gives `outstanding_matured` (redeemable-after days that have come) and `outstanding_unmatured` (days still ahead), which add up to `outstanding`; `spi audit` checks that and refuses a reply where they do not. Any other field in the reply is ignored. Reading it:
 
-- On an esp-mint that has run 0.5.0 from its first note, `ESP unsplit` is 0 and there is **no warning**.
-- On a mint upgraded from an earlier version, `ESP unsplit` is the old ESP still outstanding, and one warning says how much. It is in the total and in neither matured nor unmatured, and it falls as that ESP is redeemed. It is shown, not guessed at.
 - esp-mint adds a request to the split when it finishes it, and reports `requests_unfinished`. If that is above zero the parts may differ from the total for a moment, and `spi audit` accepts the gap and says so in a warning. With none unfinished, a gap is an error.
 - An esp-mint before 0.5.0 gives no split: ESP is shown as one figure with a warning, as before.
 
@@ -200,7 +199,7 @@ cargo test
 cargo fmt --check
 ```
 
-Unit and integration tests: the config (defaults, regtest unless written down, environment over file, every problem listed), the generated files (header, the named values, pass-through of nested tables, arrays and floats, a pass-through of a named key refused), the audit arithmetic (rate, a single ESP unit, `u64::MAX` figures, overflow, a split that does not add up, unsplit ESP, unfinished requests), the service files (the Linux units and the macOS plists that `install` writes with no other folder present, the custom `[service]` settings, the cookie and bitcoind arguments, a missing binary, a refused value, a template with a bad placeholder, the `--ops` override, and `sh -n` on the generated script), and `status`, `audit`, `install` and the sync wait against **stand-ins** for the mints and bitcoind: small HTTP servers in the test that answer with the replies the real ones give. The sync cases are bitcoind syncing, synced and unreachable (and a fresh regtest node, another chain, an unreadable cookie).
+Unit and integration tests: the config (defaults, regtest unless written down, environment over file, every problem listed), the generated files (header, the named values, pass-through of nested tables, arrays and floats, a pass-through of a named key refused), the audit arithmetic (rate, a single ESP unit, `u64::MAX` figures, overflow, a split that does not add up, unfinished requests), the service files (the Linux units and the macOS plists that `install` writes with no other folder present, the custom `[service]` settings, the cookie and bitcoind arguments, a missing binary, a refused value, a template with a bad placeholder, the `--ops` override, and `sh -n` on the generated script), the command line run as a process (an unknown command, a flag a command does not take, `install` with both service-file options, `config` without `show`, a bad `--network`, and `--dir`, `--config` or `--network` with no value, all refused before anything is read or written), and `status`, `audit`, `install` and the sync wait against **stand-ins** for the mints and bitcoind: small HTTP servers in the test that answer with the replies the real ones give. The sync cases are bitcoind syncing, synced and unreachable (and a fresh regtest node, another chain, an unreadable cookie).
 
 They are not the real mints. A real psp-mint needs a running bitcoind (REGTEST.md in psp-mint is the end-to-end run), and the esp-mint state a test needs to start one in-process is not in a released tag. **The service script has not been run by the tests**: running it needs root and a real machine, so it is only syntax-checked with `sh -n`, and the units are not run through `systemd-analyze verify` or the plists through `plutil -lint` (the macOS test checks that the tags balance). Do a first install on a test machine before one that matters. To try spi against real ones on regtest: start `bitcoind -regtest -daemon`, then `spi install`, `spi start`, `spi status`, `spi audit`, `spi stop`.
 

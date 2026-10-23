@@ -9,13 +9,14 @@ fn figs(psp: u128, total: u128, matured: Option<u128>, unmatured: Option<u128>) 
         esp_total: total,
         esp_matured: matured,
         esp_unmatured: unmatured,
-        esp_unsplit: 0,
         esp_unfinished: 0,
     }
 }
 
 #[test]
 fn ten_psp_is_one_dollar_and_a_psp_is_1e11_esp() {
+    // The rate is one named constant.
+    assert_eq!(audit::PSP_PER_USD, 10);
     // 10 PSP, 5 PSP of ESP matured (5 * 10^11), 2.5 PSP unmatured.
     let r = audit::report(&figs(
         10,
@@ -38,8 +39,7 @@ fn ten_psp_is_one_dollar_and_a_psp_is_1e11_esp() {
     assert_eq!(r.esp_total.psp, "7.50000000000");
     assert_eq!(r.total.psp, "17.50000000000");
     assert_eq!(r.total.usd, "1.750000000000");
-    // Nothing is unsplit, and nothing is warned about.
-    assert_eq!(r.esp_unsplit.as_ref().unwrap().units, "0");
+    // Nothing is warned about.
     assert!(r.warnings.is_empty());
 }
 
@@ -68,8 +68,15 @@ fn large_values_do_not_overflow_or_lose_digits() {
 #[test]
 fn a_figure_too_large_to_add_is_an_error_not_a_wrapped_number() {
     // psp * 10^11 would not fit in 128 bits.
-    assert!(audit::report(&figs(u128::MAX, 0, None, None)).is_err());
-    assert!(audit::report(&figs(u128::MAX / 100_000_000_000, u128::MAX, None, None)).is_err());
+    let overflow = "a figure is too large to add up (it overflows 128 bits)";
+    assert_eq!(
+        audit::report(&figs(u128::MAX, 0, None, None)).unwrap_err(),
+        overflow
+    );
+    assert_eq!(
+        audit::report(&figs(u128::MAX / 100_000_000_000, u128::MAX, None, None)).unwrap_err(),
+        overflow
+    );
     // Matured plus unmatured overflowing is refused when the replies are read.
     let psp = json!({"outstanding": 1});
     let esp = json!({
@@ -77,7 +84,10 @@ fn a_figure_too_large_to_add_is_an_error_not_a_wrapped_number() {
         "outstanding_matured": "340282366920938463463374607431768211455",
         "outstanding_unmatured": "1"
     });
-    assert!(audit::figures(&psp, &esp).is_err());
+    assert_eq!(
+        audit::figures(&psp, &esp).unwrap_err(),
+        "esp-mint matured plus unmatured overflows"
+    );
 }
 
 #[test]
@@ -92,7 +102,6 @@ fn replies_are_read_as_numbers_or_strings() {
     assert!(r.esp_matured.is_none() && r.esp_unmatured.is_none());
     assert_eq!(r.warnings.len(), 1);
     assert!(r.warnings[0].contains("outstanding_matured"));
-    assert!(r.esp_unsplit.is_none());
     let text = audit::render(&r, "regtest");
     assert!(text.contains("not reported by esp-mint") && text.contains("WARNING"));
 }
@@ -101,117 +110,52 @@ fn replies_are_read_as_numbers_or_strings() {
 fn a_split_that_does_not_add_up_or_is_half_there_is_refused() {
     let psp = json!({"outstanding": 1});
     let wrong = json!({"outstanding": 10, "outstanding_matured": 4, "outstanding_unmatured": 5});
-    assert!(
-        audit::figures(&psp, &wrong)
-            .unwrap_err()
-            .contains("does not add up")
+    assert_eq!(
+        audit::figures(&psp, &wrong).unwrap_err(),
+        "esp-mint /audit does not add up: matured 4 + unmatured 5 = 9, but outstanding is 10"
     );
     let half = json!({"outstanding": 10, "outstanding_matured": 10});
-    assert!(audit::figures(&psp, &half).is_err());
+    assert_eq!(
+        audit::figures(&psp, &half).unwrap_err(),
+        "esp-mint /audit has only one of outstanding_matured and outstanding_unmatured"
+    );
     let missing = json!({"issued": 1});
-    assert!(audit::figures(&missing, &json!({"outstanding": 1})).is_err());
+    assert_eq!(
+        audit::figures(&missing, &json!({"outstanding": 1})).unwrap_err(),
+        "psp-mint /audit has no `outstanding`"
+    );
     let bad = json!({"outstanding": "ten"});
-    assert!(audit::figures(&psp, &bad).is_err());
+    assert_eq!(
+        audit::figures(&psp, &bad).unwrap_err(),
+        "esp-mint /audit `outstanding` is not a whole number: \"ten\""
+    );
 }
 
 #[test]
-fn the_split_with_nothing_unsplit_has_no_warning_and_prints_the_zero() {
+fn the_split_prints_its_zero_lines_with_no_warning() {
     let psp = json!({"outstanding": 0});
     let esp = json!({
         "outstanding": "7",
-        "outstanding_matured": "3",
-        "outstanding_unmatured": "4",
-        "outstanding_unsplit": "0",
+        "outstanding_matured": "7",
+        "outstanding_unmatured": "0",
         "requests_unfinished": 0
     });
     let f = audit::figures(&psp, &esp).unwrap();
     assert_eq!(
-        (
-            f.esp_matured,
-            f.esp_unmatured,
-            f.esp_unsplit,
-            f.esp_unfinished
-        ),
-        (Some(3), Some(4), 0, 0)
+        (f.esp_matured, f.esp_unmatured, f.esp_unfinished),
+        (Some(7), Some(0), 0)
     );
     let r = audit::report(&f).unwrap();
     assert!(r.warnings.is_empty());
     let text = audit::render(&r, "regtest");
+    assert!(!text.contains("WARNING"), "{text}");
+    // The line for the part that is zero is there, not left out.
     assert!(
-        text.contains("ESP unsplit") && !text.contains("WARNING"),
+        text.contains(
+            "  ESP unmatured                               0 ESP  =                  0.00000000000 PSP  = $0.000000000000\n"
+        ),
         "{text}"
     );
-}
-
-#[test]
-fn esp_issued_before_the_split_is_shown_as_unsplit_and_warned_about_by_its_size() {
-    let psp = json!({"outstanding": 0});
-    // 5 PSP of ESP outstanding: 1 matured, 1.5 unmatured, 2.5 from before esp-mint kept the split.
-    let esp = json!({
-        "outstanding": 500_000_000_000u64,
-        "outstanding_matured": 100_000_000_000u64,
-        "outstanding_unmatured": 150_000_000_000u64,
-        "outstanding_unsplit": 250_000_000_000u64,
-        "requests_unfinished": 0
-    });
-    let f = audit::figures(&psp, &esp).unwrap();
-    assert_eq!(f.esp_unsplit, 250_000_000_000);
-    let r = audit::report(&f).unwrap();
-    let x = r.esp_unsplit.as_ref().unwrap();
-    assert_eq!(
-        (x.units.as_str(), x.psp.as_str()),
-        ("250000000000", "2.50000000000")
-    );
-    // The total is still esp-mint's outstanding, counted once.
-    assert_eq!(r.esp_total.psp, "5.00000000000");
-    assert_eq!(r.total.psp, "5.00000000000");
-    assert_eq!(r.warnings.len(), 1);
-    assert!(r.warnings[0].contains("250000000000 ESP (2.50000000000 PSP)"));
-    assert!(r.warnings[0].contains("before esp-mint kept the split"));
-    let text = audit::render(&r, "regtest");
-    assert!(
-        text.contains("ESP unsplit") && text.contains("WARNING"),
-        "{text}"
-    );
-}
-
-#[test]
-fn the_unsplit_part_is_counted_in_the_sum_that_must_equal_the_total() {
-    let psp = json!({"outstanding": 1});
-    // matured + unmatured alone is short of the total, and unsplit covers it
-    let ok = json!({
-        "outstanding": 10,
-        "outstanding_matured": 4,
-        "outstanding_unmatured": 5,
-        "outstanding_unsplit": 1
-    });
-    assert!(audit::figures(&psp, &ok).is_ok());
-    // and a wrong unsplit does not
-    let wrong = json!({
-        "outstanding": 10,
-        "outstanding_matured": 4,
-        "outstanding_unmatured": 5,
-        "outstanding_unsplit": 2
-    });
-    let e = audit::figures(&psp, &wrong).unwrap_err();
-    assert!(
-        e.contains("does not add up") && e.contains("unsplit 2"),
-        "{e}"
-    );
-    // an esp-mint that has only the old two parts is read as before
-    let old = json!({"outstanding": 9, "outstanding_matured": 4, "outstanding_unmatured": 5});
-    assert_eq!(audit::figures(&psp, &old).unwrap().esp_unsplit, 0);
-    // unsplit without the split is a half reply
-    let odd = json!({"outstanding": 9, "outstanding_unsplit": 9});
-    assert!(audit::figures(&psp, &odd).is_err());
-    // overflow is an error, not a wrapped number
-    let big = json!({
-        "outstanding": 1,
-        "outstanding_matured": "1",
-        "outstanding_unmatured": "1",
-        "outstanding_unsplit": "340282366920938463463374607431768211455"
-    });
-    assert!(audit::figures(&psp, &big).is_err());
 }
 
 #[test]
@@ -223,7 +167,6 @@ fn unfinished_requests_excuse_a_gap_and_are_warned_about() {
         "outstanding": 8,
         "outstanding_matured": 4,
         "outstanding_unmatured": 5,
-        "outstanding_unsplit": 0,
         "requests_unfinished": 1
     });
     let f = audit::figures(&psp, &esp).unwrap();
@@ -238,15 +181,12 @@ fn unfinished_requests_excuse_a_gap_and_are_warned_about() {
         "outstanding": 8,
         "outstanding_matured": 4,
         "outstanding_unmatured": 5,
-        "outstanding_unsplit": 0,
         "requests_unfinished": 0
     });
-    assert!(audit::figures(&psp, &none).is_err());
-}
-
-#[test]
-fn the_rate_is_one_named_constant() {
-    assert_eq!(audit::PSP_PER_USD, 10);
+    assert_eq!(
+        audit::figures(&psp, &none).unwrap_err(),
+        "esp-mint /audit does not add up: matured 4 + unmatured 5 = 9, but outstanding is 8"
+    );
 }
 
 #[test]

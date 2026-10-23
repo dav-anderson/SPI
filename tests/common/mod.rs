@@ -108,6 +108,6 @@ pub fn load_env(
         file,
         env: &lookup,
         home: "/home/test".into(),
-        mac: false,
+        os: "linux",
     })
 }

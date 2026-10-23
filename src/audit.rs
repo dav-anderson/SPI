@@ -5,11 +5,10 @@
 //! - **ESP**: esp-mint's `outstanding`, in ESP units (`ESP_PER_PSP` of them to
 //!   the PSP), itemized as matured and unmatured when esp-mint reports
 //!   `outstanding_matured` and `outstanding_unmatured` (esp-mint 0.5.0 and
-//!   later), and a third part, `outstanding_unsplit`, for ESP it issued before
-//!   it kept the split, whose day it does not know. All count at full value:
-//!   none is discounted for waiting. The three add up to `outstanding`, and a
-//!   reply where they do not is refused, unless esp-mint says it has requests
-//!   it has not finished (`requests_unfinished`), which it has not counted yet.
+//!   later). Both count at full value: neither is discounted for waiting. The
+//!   two add up to `outstanding`, and a reply where they do not is refused,
+//!   unless esp-mint says it has requests it has not finished
+//!   (`requests_unfinished`), which it has not counted yet.
 //! - **FSP is not counted.** It is backed by ESP the FSP mint holds, which is
 //!   already in the ESP figure; counting it again would count it twice.
 //!
@@ -51,10 +50,6 @@ pub struct Report {
     /// `None` when esp-mint does not report the split (see `warnings`).
     pub esp_matured: Option<Line>,
     pub esp_unmatured: Option<Line>,
-    /// ESP issued before esp-mint kept the split, whose day it does not know.
-    /// `Some` whenever the split is reported (zero on a mint that has kept it
-    /// from its first note).
-    pub esp_unsplit: Option<Line>,
     /// esp-mint's outstanding total, as it reported it.
     pub esp_total: Line,
     /// PSP outstanding plus all ESP outstanding.
@@ -69,8 +64,6 @@ pub struct Figures {
     pub esp_total: u128,
     pub esp_matured: Option<u128>,
     pub esp_unmatured: Option<u128>,
-    /// esp-mint's `outstanding_unsplit`: 0 when it does not report it.
-    pub esp_unsplit: u128,
     /// esp-mint's `requests_unfinished`: 0 when it does not report it.
     pub esp_unfinished: u128,
 }
@@ -106,32 +99,21 @@ pub fn figures(psp: &Value, esp: &Value) -> Result<Figures, String> {
     let esp_total = field(esp, "outstanding", "esp-mint")?;
     let matured = optional(esp, "outstanding_matured", "esp-mint")?;
     let unmatured = optional(esp, "outstanding_unmatured", "esp-mint")?;
-    let unsplit = optional(esp, "outstanding_unsplit", "esp-mint")?;
     let unfinished = optional(esp, "requests_unfinished", "esp-mint")?.unwrap_or(0);
-    let mut unsplit_part = 0;
     match (matured, unmatured) {
         (Some(m), Some(u)) => {
-            unsplit_part = unsplit.unwrap_or(0);
             let sum = m
                 .checked_add(u)
-                .and_then(|s| s.checked_add(unsplit_part))
-                .ok_or("esp-mint matured plus unmatured plus unsplit overflows")?;
+                .ok_or("esp-mint matured plus unmatured overflows")?;
             // esp-mint adds a request to the split when it finishes it, and
-            // says how many it has not. With none, the three must add up.
+            // says how many it has not. With none, the two must add up.
             if sum != esp_total && unfinished == 0 {
                 return Err(format!(
-                    "esp-mint /audit does not add up: matured {m} + unmatured {u} + unsplit {unsplit_part} = {sum}, but outstanding is {esp_total}"
+                    "esp-mint /audit does not add up: matured {m} + unmatured {u} = {sum}, but outstanding is {esp_total}"
                 ));
             }
         }
-        (None, None) => {
-            if unsplit.is_some() {
-                return Err(
-                    "esp-mint /audit has outstanding_unsplit but not outstanding_matured and outstanding_unmatured"
-                        .into(),
-                );
-            }
-        }
+        (None, None) => {}
         _ => {
             return Err(
                 "esp-mint /audit has only one of outstanding_matured and outstanding_unmatured"
@@ -144,7 +126,6 @@ pub fn figures(psp: &Value, esp: &Value) -> Result<Figures, String> {
         esp_total,
         esp_matured: matured,
         esp_unmatured: unmatured,
-        esp_unsplit: unsplit_part,
         esp_unfinished: unfinished,
     })
 }
@@ -177,13 +158,6 @@ pub fn report(f: &Figures) -> Result<Report, String> {
                 .to_string(),
         );
     }
-    if f.esp_unsplit > 0 {
-        warnings.push(format!(
-            "{} ESP ({} PSP) outstanding was issued before esp-mint kept the split by day (0.5.0), so its day is not known: it is in neither matured nor unmatured, and it falls as that ESP is redeemed",
-            f.esp_unsplit,
-            decimal(f.esp_unsplit, ESP_PER_PSP_U)
-        ));
-    }
     if f.esp_unfinished > 0 {
         warnings.push(format!(
             "esp-mint has {} unfinished request(s): the split does not count what they have done so far, so its parts may not add up to the total until they finish",
@@ -194,9 +168,6 @@ pub fn report(f: &Figures) -> Result<Report, String> {
         psp_outstanding: line("PSP", f.psp, psp_scaled),
         esp_matured: f.esp_matured.map(|m| line("ESP", m, m)),
         esp_unmatured: f.esp_unmatured.map(|u| line("ESP", u, u)),
-        esp_unsplit: f
-            .esp_matured
-            .map(|_| line("ESP", f.esp_unsplit, f.esp_unsplit)),
         esp_total: line("ESP", f.esp_total, f.esp_total),
         total: line("PSP", total_scaled / ESP_PER_PSP_U, total_scaled),
         warnings,
@@ -222,9 +193,6 @@ pub fn render(r: &Report, network: &str) -> String {
         (Some(m), Some(u)) => {
             row(&mut out, "ESP matured", m);
             row(&mut out, "ESP unmatured", u);
-            if let Some(x) = &r.esp_unsplit {
-                row(&mut out, "ESP unsplit", x);
-            }
         }
         _ => {
             let _ = writeln!(out, "  ESP matured / unmatured: not reported by esp-mint");

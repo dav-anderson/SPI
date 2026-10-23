@@ -753,7 +753,11 @@ mod tests {
         for bad in [
             "", "/a b", "/a'b", "/a\"b", "/a%b", "/a$b", "/a\\b", "/a\nb", "/a;b",
         ] {
-            assert!(plain("p", bad).is_err(), "{bad:?}");
+            let e = plain("p", bad).unwrap_err();
+            assert!(
+                e.starts_with(&format!("p is `{bad}`: in a service file it may hold only")),
+                "{bad:?}: {e}"
+            );
         }
     }
 

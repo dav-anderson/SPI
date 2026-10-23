@@ -28,7 +28,7 @@ fn load_os(dir: &Path, text: &str, mac: bool, env: &[(&str, &str)]) -> Result<Sp
         file: Some(text),
         env: &lookup,
         home: "/home/test".into(),
-        mac,
+        os: if mac { "macos" } else { "linux" },
     })
 }
 

@@ -190,7 +190,15 @@ pub struct Inputs<'a> {
     pub file: Option<&'a str>,
     pub env: &'a dyn Fn(&str) -> Option<String>,
     pub home: String,
-    pub mac: bool,
+    /// The operating system's name, as `std::env::consts::OS` gives it.
+    /// `"macos"` gets the macOS layout (folders, service account, launchd);
+    /// any other name gets the Linux one.
+    pub os: &'a str,
+}
+
+/// Whether `os` (a `std::env::consts::OS` name) is macOS.
+pub fn is_mac(os: &str) -> bool {
+    os == "macos"
 }
 
 fn only_keys(t: &Table, allowed: &[&str], place: &str, problems: &mut Vec<String>) {
@@ -248,6 +256,7 @@ fn is_account_name(name: &str) -> bool {
 
 impl Spi {
     pub fn load(i: &Inputs) -> Result<Spi, Vec<String>> {
+        let mac = is_mac(i.os);
         let mut problems = Vec::new();
         let root: Table = match i.file {
             None => Table::new(),
@@ -357,7 +366,7 @@ impl Spi {
             "bitcoind.cookie",
             "SPI_BITCOIND_COOKIE",
             cookie_text,
-            network.cookie(&i.home, i.mac).display().to_string(),
+            network.cookie(&i.home, mac).display().to_string(),
         );
         let wallet = pick(
             "bitcoind.wallet",
@@ -468,7 +477,7 @@ impl Spi {
         let psp_settings = mint(Which::Psp, psp, &mut problems);
         let esp_settings = mint(Which::Esp, esp, &mut problems);
 
-        let account = if i.mac { "_spmint" } else { "spmint" };
+        let account = if mac { "_spmint" } else { "spmint" };
         let user = pick(
             "service.user",
             "SPI_SERVICE_USER",
@@ -543,7 +552,7 @@ impl Spi {
         if problems.is_empty() {
             Ok(Spi {
                 dir: i.dir.clone(),
-                mac: i.mac,
+                mac,
                 network,
                 rpc_url,
                 cookie: PathBuf::from(cookie),

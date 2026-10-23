@@ -87,7 +87,12 @@ fn every_problem_is_listed_and_unknown_keys_are_refused() {
     ] {
         assert!(all.contains(needle), "{needle} not in:\n{all}");
     }
-    assert!(load(&scratch("toml"), Some("this is = = not toml")).is_err());
+    let not_toml = load(&scratch("toml"), Some("this is = = not toml")).unwrap_err();
+    assert_eq!(not_toml.len(), 1);
+    assert!(
+        not_toml[0].starts_with("spi.toml is not valid TOML: "),
+        "{not_toml:?}"
+    );
 }
 
 #[test]

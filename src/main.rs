@@ -31,12 +31,57 @@ spi [--dir DIR] [--config FILE] [--network NAME] <command>
                   esp-mint (also `health`). The service is ok, degraded (bitcoind
                   syncing: PSP not ready) or down. Exit 1 unless ok.
   config show     The settings in use and where each came from.
-  audit [--json]  What the PSP and ESP mints owe: PSP outstanding, ESP matured,
-                  unmatured and unsplit, each in its unit, in PSP and in USD. FSP
-                  is not counted.
+  audit [--json]  What the PSP and ESP mints owe: PSP outstanding, ESP matured
+                  and unmatured, each in its unit, in PSP and in USD. FSP is not
+                  counted.
 
 Network: regtest unless spi.toml (network = ...) or SPI_NETWORK says otherwise.
 Settings: spi.toml in DIR (default ~/.spi; SPI_DIR, SPI_CONFIG), then SPI_* variables.";
+
+fn unknown_command(command: &str) -> String {
+    format!("unknown command `{command}`. Run with --help")
+}
+
+/// Refuse a command, or an argument of it, that `spi` does not have, before
+/// anything is read, written or contacted. `rest` is what follows the command.
+fn check_args(command: &str, rest: &[String]) -> Result<(), String> {
+    // (flags with no value, flags that take the next argument as their value)
+    let (flags, value_flags): (&[&str], &[&str]) = match command {
+        "install" => (&["--no-service-files"], &["--service-files", "--ops"]),
+        "start" | "stop" => (&[], &[]),
+        "status" | "health" | "audit" => (&["--json"], &[]),
+        "config" => {
+            return match rest {
+                [word] if word == "show" => Ok(()),
+                [word, extra, ..] if word == "show" => Err(format!(
+                    "`{extra}` is not an argument of `spi config show`. Run with --help"
+                )),
+                _ => Err("usage: spi config show".into()),
+            };
+        }
+        other => return Err(unknown_command(other)),
+    };
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        if flags.contains(&arg.as_str()) {
+            continue;
+        }
+        if value_flags.contains(&arg.as_str()) {
+            if args.next().is_none() {
+                return Err(format!("{arg} needs a value"));
+            }
+            continue;
+        }
+        return Err(format!(
+            "`{arg}` is not an argument of `spi {command}`. Run with --help"
+        ));
+    }
+    if rest.iter().any(|a| a == "--service-files") && rest.iter().any(|a| a == "--no-service-files")
+    {
+        return Err("--service-files and --no-service-files cannot be given together".into());
+    }
+    Ok(())
+}
 
 fn real_main(args: Vec<String>) -> Result<bool, String> {
     let mut args = args;
@@ -46,16 +91,16 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
     // Global flags may come before the command.
     loop {
         match args.first().map(String::as_str) {
-            Some("--dir") if args.len() > 1 => {
-                dir_flag = Some(args[1].clone());
-                args.drain(..2);
-            }
-            Some("--config") if args.len() > 1 => {
-                config_flag = Some(args[1].clone());
-                args.drain(..2);
-            }
-            Some("--network") if args.len() > 1 => {
-                network_flag = Some(args[1].clone());
+            Some(flag @ ("--dir" | "--config" | "--network")) => {
+                if args.len() < 2 {
+                    return Err(format!("{flag} needs a value"));
+                }
+                let value = Some(args[1].clone());
+                match flag {
+                    "--dir" => dir_flag = value,
+                    "--config" => config_flag = value,
+                    _ => network_flag = value,
+                }
                 args.drain(..2);
             }
             _ => break,
@@ -65,6 +110,7 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
         println!("{USAGE}");
         return Ok(true);
     }
+    check_args(&args[0], &args[1..])?;
     let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
     let env = move |name: &str| -> Option<String> {
         if name == "SPI_NETWORK" {
@@ -96,13 +142,12 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && explicit_config.is_none() => None,
         Err(e) => return Err(format!("cannot read {}: {e}", config_path.display())),
     };
-    let mac = cfg!(target_os = "macos");
     let spi = Spi::load(&Inputs {
         dir,
         file: file.as_deref(),
         env: &env,
         home,
-        mac,
+        os: std::env::consts::OS,
     })
     .map_err(|p| format!("the settings are not valid:\n  {}", p.join("\n  ")))?;
     let json = rest.iter().any(|a| a == "--json");
@@ -114,12 +159,10 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
 
     match command.as_str() {
         "install" => {
+            // `check_args` has refused the two together.
             let skip = rest.iter().any(|a| a == "--no-service-files");
             let service_files = match (skip, flag("--service-files")) {
-                (true, Some(_)) => {
-                    return Err("--service-files and --no-service-files together".into());
-                }
-                (true, None) => ServiceFiles::Skip,
+                (true, _) => ServiceFiles::Skip,
                 (false, Some(dir)) => ServiceFiles::Into(PathBuf::from(dir)),
                 (false, None) => ServiceFiles::Default,
             };
@@ -170,9 +213,6 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
             Ok(all)
         }
         "config" => {
-            if rest.first().map(String::as_str) != Some("show") {
-                return Err("usage: spi config show".into());
-            }
             let shown_file = file.as_ref().map(|_| config_path.as_path());
             commands::config_show(&spi, shown_file)
                 .iter()
@@ -191,7 +231,8 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
             }
             Ok(true)
         }
-        other => Err(format!("unknown command `{other}`. Run with --help")),
+        // `check_args` has refused any other command.
+        other => Err(unknown_command(other)),
     }
 }
 

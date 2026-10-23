@@ -68,7 +68,7 @@ The cost is one more command, `sudo sh ~/.spi/service/install-system.sh`. A `--s
 `audit` is `psp-mint GET /audit` and `esp-mint GET /audit`, combined.
 
 - PSP outstanding is psp-mint's `outstanding` (whole PSP).
-- ESP is esp-mint's `outstanding` (ESP units), shown as matured, unmatured and unsplit when esp-mint reports them (0.5.0 and later). All three are at full value. Nothing is discounted for waiting. Unsplit is ESP issued before esp-mint kept the per-day ledger; its day is unknown, so it is neither of the other two. The three must add up to `outstanding`, or the reply is refused, unless esp-mint says it has unfinished requests, which it has not counted yet (then a warning says so).
+- ESP is esp-mint's `outstanding` (ESP units), shown as matured and unmatured when esp-mint reports them (0.5.0 and later). Both are at full value. Nothing is discounted for waiting. The two must add up to `outstanding`, or the reply is refused, unless esp-mint says it has unfinished requests, which it has not counted yet (then a warning says so).
 - FSP is left out. It is issued 1:1 against ESP that the FSP mint then holds, and that ESP is in esp-mint's outstanding; counting FSP too would count it twice.
 - Every line is in its own unit, in PSP (`units / ESP_PER_PSP`, or the PSP count) and in USD (PSP / `PSP_PER_USD`, 10). They are exact decimals from `u128` integers. Each addition and the PSP to ESP scaling is checked, and an overflow is an error. The largest PSP count that fits is about 3.4 x 10^27, far beyond any real figure but not infinite.
 - `PSP_PER_USD` is the one place the rate is held, with a comment that it must match the payout rate. The economics (what a payout costs, fees on payout, any surplus) are not here or in any repo.
@@ -78,12 +78,11 @@ The cost is one more command, `sudo sh ~/.spi/service/install-system.sh`. A `--s
 
 esp-mint's `GET /audit` used to count issued and redeemed from mint-core's totals, which do not know the redeemable-after day. Matured and unmatured outstanding ESP needs a figure by terms (service and day), and it could not be derived from what esp-mint stored: an exchange, a transfer and a decline were stored in the same `done` shape, and a redemption's per-terms record covered only what left.
 
-esp-mint 0.5.0 keeps a ledger by redeemable-after day (issued and redeemed), changed in the same atomic write that finishes each request, and `/audit` adds `outstanding_matured`, `outstanding_unmatured`, `outstanding_unsplit`, `requests_unfinished` and `as_of_day` (esp-mint's DESIGN.md, "The audit split", has the rules and the crash safety). spi reads them as they are; the day rule is esp-mint's (`Terms::is_redeemable_at`), not spi's, so spi does no date arithmetic.
+esp-mint 0.5.0 keeps a ledger by redeemable-after day (issued and redeemed), changed in the same atomic write that finishes each request, and `/audit` adds `outstanding_matured`, `outstanding_unmatured`, `requests_unfinished` and `as_of_day` (esp-mint's DESIGN.md, "The audit split", has the rules and the crash safety). spi reads them as they are; the day rule is esp-mint's (`Terms::is_redeemable_at`), not spi's, so spi does no date arithmetic.
 
 What spi does with them:
 
-- **Unsplit is shown, not hidden or spread.** A mint upgraded from an earlier version has ESP the ledger never saw. esp-mint can not say which day it belongs to, and spi does not guess. `ESP unsplit` is its own line, counted at full value in the total, with a warning that gives the amount. The warning goes away by itself as that ESP is redeemed, and a mint that ran 0.5.0 from the start never has it.
-- **The parts must add up.** matured + unmatured + unsplit has to equal `outstanding`. A reply where it does not is an error, because a report whose lines do not add up to its total is wrong somewhere and should not be read as right.
+- **The parts must add up.** matured + unmatured has to equal `outstanding`. A reply where it does not is an error, because a report whose lines do not add up to its total is wrong somewhere and should not be read as right.
 - **The one excuse is an unfinished request.** esp-mint's counters move as each note is burned or signed, and its ledger when a request finishes, so for a moment the two differ. esp-mint says how many requests are unfinished. If any are, spi accepts the gap and warns; the total is still esp-mint's `outstanding`.
 - **An older esp-mint** gives none of this: ESP is one figure and a warning says the split needs 0.5.0.
 

@@ -123,14 +123,12 @@ fn audit_reads_both_mints_and_itemizes_matured_and_unmatured() {
             "outstanding": 2_000_000_000_000u64,
             "outstanding_matured": 500_000_000_000u64,
             "outstanding_unmatured": 1_500_000_000_000u64,
-            "outstanding_unsplit": 0,
             "requests_unfinished": 0,
             "as_of_day": 20_000,
         }),
     );
     let spi = config(&dir, "127.0.0.1:1", &psp, &esp);
     let r = commands::audit(&spi).unwrap();
-    assert_eq!(r.esp_unsplit.as_ref().unwrap().units, "0");
     assert_eq!(r.psp_outstanding.units, "60");
     assert_eq!(r.psp_outstanding.usd, "6.000000000000");
     assert_eq!(r.esp_matured.as_ref().unwrap().psp, "5.00000000000");
@@ -139,31 +137,6 @@ fn audit_reads_both_mints_and_itemizes_matured_and_unmatured() {
     assert_eq!(r.total.psp, "80.00000000000");
     assert_eq!(r.total.usd, "8.000000000000");
     assert!(r.warnings.is_empty());
-}
-
-#[test]
-fn audit_of_a_mint_upgraded_with_old_esp_shows_it_as_unsplit_with_one_warning() {
-    let dir = scratch("audit-unsplit");
-    let psp = mint(200, json!({"status": "ok"}), json!({"outstanding": 10}));
-    // 2 PSP of ESP outstanding, 0.5 of it issued since esp-mint kept the split.
-    let esp = mint(
-        200,
-        json!({"status": "ok"}),
-        json!({
-            "outstanding": 200_000_000_000u64,
-            "outstanding_matured": 0,
-            "outstanding_unmatured": 50_000_000_000u64,
-            "outstanding_unsplit": 150_000_000_000u64,
-            "requests_unfinished": 0,
-        }),
-    );
-    let spi = config(&dir, "127.0.0.1:1", &psp, &esp);
-    let r = commands::audit(&spi).unwrap();
-    assert_eq!(r.esp_unsplit.as_ref().unwrap().psp, "1.50000000000");
-    assert_eq!(r.esp_total.psp, "2.00000000000");
-    assert_eq!(r.total.psp, "12.00000000000");
-    assert_eq!(r.warnings.len(), 1);
-    assert!(r.warnings[0].contains("before esp-mint kept the split"));
 }
 
 #[test]
