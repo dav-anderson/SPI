@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 (2026-10-24)
+
+The shared crate is renamed air-minterface (it was air-interface): spi now
+depends on `air-minterface = { git = "https://github.com/dav-anderson/air-minterface.git", tag = "v0.2.0" }`,
+the code imports `air_minterface`, and the line `spi versions` shows is named
+`air-minterface`. The README's install line names this version. No other change.
+
 ## 0.2.0 (2026-10-24)
 
 ROADMAP item 32. The code spi shared with aso is the new crate [air-interface](https://github.com/dav-anderson/air-interface) (`air-interface = { git = ..., tag = "v0.1.0" }`). The unreleased work below is part of this version.

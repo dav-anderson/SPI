@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use air_interface::Managed;
-use air_interface::files::sha256_file;
-use air_interface::release::{Download, Source};
+use air_minterface::Managed;
+use air_minterface::files::sha256_file;
+use air_minterface::release::{Download, Source};
 use spi::config::{Inputs, Spi};
 use spi::exec::{Exec, Ran};
 

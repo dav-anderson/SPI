@@ -2,10 +2,10 @@
 //! how each is restarted.
 //!
 //! The upgrade itself (the target, the build and its checksum, the swap, the
-//! wait for health and the rollback) is air-interface's `upgrade` module; this
+//! wait for health and the rollback) is air-minterface's `upgrade` module; this
 //! one has what is spi's own: the programs, their restart commands and what
 //! each restart costs (`Program::method`). The wording and the few rules that
-//! differ per program are in [`crate::interface`]. Read air-interface's
+//! differ per program are in [`crate::interface`]. Read air-minterface's
 //! `upgrade` module for the steps.
 //!
 //! **Brief downtime.** Every upgrade is a restart of the program on the service
@@ -16,10 +16,10 @@
 //! asks nothing and changes nothing). It needs the rights to write `bin_dir` and
 //! to run the service manager, so run it as root (`sudo spi upgrade`).
 
-use air_interface::Managed;
-use air_interface::exec::Exec;
-pub use air_interface::upgrade::{Options, Upgraded, upgrade, wait_for};
-pub use air_interface::{Probe, Say};
+use air_minterface::Managed;
+use air_minterface::exec::Exec;
+pub use air_minterface::upgrade::{Options, Upgraded, upgrade, wait_for};
+pub use air_minterface::{Probe, Say};
 
 use crate::config::Spi;
 
@@ -106,7 +106,7 @@ pub fn restart(spi: &Spi, exec: &dyn Exec, program: Program) -> Result<(), Strin
     } else {
         Err(format!(
             "`{}` failed: {}",
-            air_interface::exec::command_line(&bin, &args),
+            air_minterface::exec::command_line(&bin, &args),
             ran.last_line()
         ))
     }

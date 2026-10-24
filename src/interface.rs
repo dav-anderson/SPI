@@ -1,4 +1,4 @@
-//! spi's side of air-interface: what the shared code needs to know about this
+//! spi's side of air-minterface: what the shared code needs to know about this
 //! operator ([`Operator`], implemented on [`Spi`]) and about each program
 //! ([`Managed`], implemented on [`Program`]). The shared code does the rest;
 //! the sentences that are spi's own wording are said here, so the output is
@@ -6,12 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
-use air_interface::exec::Exec;
-use air_interface::files::find_binary;
-use air_interface::record;
-use air_interface::schedule::Job;
-use air_interface::version::{Tags, program_version};
-use air_interface::{Managed, Operator, Probe, Say};
+use air_minterface::exec::Exec;
+use air_minterface::files::find_binary;
+use air_minterface::record;
+use air_minterface::schedule::Job;
+use air_minterface::version::{Tags, program_version};
+use air_minterface::{Managed, Operator, Probe, Say};
 
 use crate::config::Spi;
 use crate::upgrade::{self, Program};
@@ -210,7 +210,7 @@ impl Managed for Program {
                 || probe
                     .version
                     .as_deref()
-                    .is_some_and(|v| air_interface::version::same_version(v, target)))
+                    .is_some_and(|v| air_minterface::version::same_version(v, target)))
     }
 
     fn not_serving(self, probe: &Probe, target: &str, wait_secs: u64) -> String {

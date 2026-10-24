@@ -9,8 +9,8 @@ mod common;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use air_interface::Managed;
-use air_interface::release::{NoSource, Source};
+use air_minterface::Managed;
+use air_minterface::release::{NoSource, Source};
 use common::{Fake, FakeSource, fake, load, ran, scratch};
 use spi::commands::{self, InstallOptions, ServiceFiles};
 use spi::config::{Inputs, Spi};
@@ -48,7 +48,7 @@ fn every_program_and_library_is_a_version_or_unknown_with_the_reason() {
     };
     assert_eq!(get("spi").version, env!("CARGO_PKG_VERSION"));
     // Fails if `spi versions` stops naming the shared code it is built on.
-    assert_eq!(get("air-interface").version, "0.1.0");
+    assert_eq!(get("air-minterface").version, "0.2.0");
     assert_eq!(get("psp-mint").version, "0.5.0");
     assert_eq!(get("psp-mint/sp-wire").version, "0.5.1");
     assert_eq!(get("psp-mint/mint-core").version, "0.1.3");

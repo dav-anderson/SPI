@@ -12,7 +12,7 @@
 //! mints always point at the server spi runs) and for the SPI's own
 //! ecash-wallet (`render_wallet`).
 
-use air_interface::air;
+use air_minterface::air;
 use toml::{Table, Value};
 
 use crate::config::{Spi, Which};

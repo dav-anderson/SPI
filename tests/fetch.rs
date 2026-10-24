@@ -1,6 +1,6 @@
 //! bitcoind from bitcoincore.org through the real `curl` and `tar`, against a stub
 //! server: listed, downloaded, checked against its signed `SHA256SUMS` and
-//! unpacked. (The GitHub half of the release source is air-interface's test.)
+//! unpacked. (The GitHub half of the release source is air-minterface's test.)
 
 mod common;
 

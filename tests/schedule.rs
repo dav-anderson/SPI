@@ -1,6 +1,6 @@
 //! spi's side of the scheduled upgrade: the job's names, files and log, which are
 //! spi's own (`Spi::UPGRADE_JOB`). The time, the commands, the record and the
-//! rules behind them are air-interface's tests.
+//! rules behind them are air-minterface's tests.
 
 mod common;
 

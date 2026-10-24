@@ -1,7 +1,7 @@
 //! `spi logs rotate`, the command the Linux service units run to keep a log
 //! under its size cap: run as a process the way a service manager runs it, with
 //! no `HOME`, no `spi.toml` and no terminal. (The rotation itself, its naming
-//! and its pruning are air-interface's tests; the units that call this command
+//! and its pruning are air-minterface's tests; the units that call this command
 //! are checked in `service_files.rs`.)
 
 use std::path::{Path, PathBuf};

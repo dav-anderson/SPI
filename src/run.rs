@@ -37,7 +37,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use air_interface::{air, logs};
+use air_minterface::{air, logs};
 
 use crate::bitcoind::{Chain, Node, Rpc};
 use crate::config::{Network, Spi, Which, url_of};
@@ -107,7 +107,7 @@ pub fn air_health_url(spi: &Spi) -> String {
     format!("{}/", url_of(&spi.air.health_addr))
 }
 
-/// Whether the AIR server's health listener answers `ok` (air-interface's
+/// Whether the AIR server's health listener answers `ok` (air-minterface's
 /// check, the same one aso makes: any other 200 is not air_server).
 pub fn air_healthy(spi: &Spi) -> bool {
     matches!(
@@ -249,7 +249,7 @@ pub fn start_air(spi: &Spi, wait_secs: u64) -> Result<String, String> {
 
 /// Open a log for appending, moving it aside first if it is over `max_mb` MB
 /// (`<log>.<epoch>.bak`, only the newest `keep` of those stay): the rule every
-/// spi log follows (air-interface's `logs`). For `spi start`, which opens a log
+/// spi log follows (air-minterface's `logs`). For `spi start`, which opens a log
 /// only when nothing is writing to it. A rotation that fails never stops the
 /// start: the log is then appended to as it is.
 pub fn open_log(path: &Path, keep: u64, max_mb: u64) -> Result<fs::File, String> {

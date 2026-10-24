@@ -18,11 +18,11 @@
 
 use std::path::{Path, PathBuf};
 
-use air_interface::exec::Exec;
-use air_interface::files::{find_binary, sha256_file};
-use air_interface::record;
-pub use air_interface::version::{Line, render};
-use air_interface::version::{known, program_version, unknown};
+use air_minterface::exec::Exec;
+use air_minterface::files::{find_binary, sha256_file};
+use air_minterface::record;
+pub use air_minterface::version::{Line, render};
+use air_minterface::version::{known, program_version, unknown};
 
 use crate::config::Spi;
 
@@ -133,7 +133,7 @@ pub fn versions(spi: &Spi, exec: &dyn Exec) -> Vec<Line> {
             ));
         }
     }
-    out.push(air_interface::version::crate_line());
+    out.push(air_minterface::version::crate_line());
     let installed = |name: &str| PathBuf::from(&spi.service.bin_dir).join(name);
     for (name, bin) in [
         ("psp-mint", spi.psp.bin.as_str()),

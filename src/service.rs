@@ -16,7 +16,7 @@
 //! the data and log folders, the bitcoind datadir and arguments, ...). An
 //! unknown or unclosed placeholder is an error that names it, never text left
 //! in a unit. In a property list the values are XML-escaped; the keys that end
-//! in `_xml` are inserted as they are. (The expander is air-interface's
+//! in `_xml` are inserted as they are. (The expander is air-minterface's
 //! `template`, shared with aso.)
 //!
 //! **On Linux every log is held to a size cap.** Each unit runs `spi logs rotate`
@@ -48,10 +48,10 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use air_interface::air;
-use air_interface::files::find_binary;
-use air_interface::schedule;
-use air_interface::template::{expand, plain, protect_home, under_home, xml_escape};
+use air_minterface::air;
+use air_minterface::files::find_binary;
+use air_minterface::schedule;
+use air_minterface::template::{expand, plain, protect_home, under_home, xml_escape};
 
 use crate::config::{Spi, Which};
 use crate::{generate, run};

@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use air_interface::Managed;
-use air_interface::files::find_binary;
+use air_minterface::Managed;
+use air_minterface::files::find_binary;
 use serde::Serialize;
 use serde_json::Value;
 

@@ -4,7 +4,7 @@
 //! their HTTP endpoints.
 //!
 //! What it shares with `aso` (running programs, templating, releases, the
-//! upgrade, the scheduled upgrade, the logs) is the `air-interface` crate;
+//! upgrade, the scheduled upgrade, the logs) is the `air-minterface` crate;
 //! [`interface`] says what spi tells it about itself and its programs.
 
 pub mod audit;
@@ -26,4 +26,4 @@ pub mod version;
 pub mod versions;
 pub mod wallet;
 
-pub use air_interface::{exec, logs, release, schedule, template};
+pub use air_minterface::{exec, logs, release, schedule, template};

@@ -1,11 +1,11 @@
 //! spi's release source: GitHub releases for psp-mint and esp-mint (the shared
-//! [`Github`] source in air-interface) and bitcoincore.org for bitcoind, through
+//! [`Github`] source in air-minterface) and bitcoincore.org for bitcoind, through
 //! `curl`, run through the same [`Exec`] as every other program (no HTTP crate).
 //!
 //! - psp-mint and esp-mint: the GitHub API lists a repository's releases and
 //!   their assets. The archive is `<program>-<version>-<os>-<arch>.tar.gz`
 //!   (`os` is `linux` or `macos`, `arch` is `x86_64` or `aarch64`) and the
-//!   release carries a `SHA256SUMS` asset. All of that is air-interface's.
+//!   release carries a `SHA256SUMS` asset. All of that is air-minterface's.
 //! - bitcoind: bitcoincore.org keeps one folder per release, `bin/bitcoin-core-<version>/`,
 //!   with `bitcoin-<version>-<cpu>-<os>.tar.gz` and `SHA256SUMS`. This is spi's.
 //!
@@ -19,11 +19,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use air_interface::Managed;
-use air_interface::exec::Exec;
-use air_interface::github::{Archive, Github};
-use air_interface::release::{self, Download, Source};
-use air_interface::version::{Tags, same_version};
+use air_minterface::Managed;
+use air_minterface::exec::Exec;
+use air_minterface::github::{Archive, Github};
+use air_minterface::release::{self, Download, Source};
+use air_minterface::version::{Tags, same_version};
 
 use crate::config::Spi;
 use crate::signature;
