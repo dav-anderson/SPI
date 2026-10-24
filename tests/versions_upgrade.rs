@@ -9,10 +9,11 @@ mod common;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use air_interface::Managed;
+use air_interface::release::{NoSource, Source};
 use common::{Fake, FakeSource, fake, load, ran, scratch};
 use spi::commands::{self, InstallOptions, ServiceFiles};
 use spi::config::{Inputs, Spi};
-use spi::release::{NoSource, Source};
 use spi::upgrade::{Options, Probe, Program, Upgraded};
 use spi::versions;
 
@@ -46,6 +47,8 @@ fn every_program_and_library_is_a_version_or_unknown_with_the_reason() {
             .unwrap_or_else(|| panic!("{name} is missing in {lines:?}"))
     };
     assert_eq!(get("spi").version, env!("CARGO_PKG_VERSION"));
+    // Fails if `spi versions` stops naming the shared code it is built on.
+    assert_eq!(get("air-interface").version, "0.1.0");
     assert_eq!(get("psp-mint").version, "0.5.0");
     assert_eq!(get("psp-mint/sp-wire").version, "0.5.1");
     assert_eq!(get("psp-mint/mint-core").version, "0.1.3");
@@ -182,11 +185,6 @@ fn install_records_the_air_server_it_will_install_and_versions_reads_it_back() {
 
 #[test]
 fn a_bitcoind_version_may_have_two_or_three_numbers() {
-    assert!(versions::same_version("29.1", "29.1.0"));
-    assert!(versions::same_version("29.1.0", "29.1"));
-    assert!(!versions::same_version("29.1", "29.1.1"));
-    assert!(!versions::same_version("29.1", "30.1"));
-    assert!(!versions::same_version("29.x", "29.1"));
     let problems = load(
         &scratch("btc-version"),
         Some("[bitcoind]\nversion = \"29\"\n"),
@@ -316,7 +314,7 @@ fn upgrade(
     dry_run: bool,
     exec: &Fake,
     probe: &dyn Fn(Program) -> Probe,
-) -> Upgraded {
+) -> Upgraded<Program> {
     with_source(spi, programs, dry_run, &NoSource, exec, probe)
 }
 
@@ -324,10 +322,10 @@ fn with_source(
     spi: &Spi,
     programs: &[Program],
     dry_run: bool,
-    source: &dyn Source,
+    source: &dyn Source<Program>,
     exec: &Fake,
     probe: &dyn Fn(Program) -> Probe,
-) -> Upgraded {
+) -> Upgraded<Program> {
     spi::upgrade::upgrade(
         spi,
         programs,
@@ -345,7 +343,7 @@ fn with_source(
 fn serving(version: &'static str) -> impl Fn(Program) -> Probe {
     move |p| {
         if p.is_mint() {
-            Probe::mint(version)
+            Probe::reporting(version)
         } else {
             Probe::up()
         }
@@ -359,7 +357,7 @@ fn a_mint_is_swapped_restarted_and_waited_for_until_health_reports_the_new_versi
     let events = Arc::clone(&log);
     let healthy = move |p: Program| {
         events.lock().unwrap().push(format!("health {}", p.name()));
-        Probe::mint("0.6.0")
+        Probe::reporting("0.6.0")
     };
     let done = upgrade(&l.spi, &[Program::Psp], false, &runner(&log), &healthy);
     assert!(done.ok, "{:?}", done.lines);
@@ -587,8 +585,8 @@ fn all_programs_go_one_at_a_time_in_start_order_each_healthy_before_the_next() {
     let healthy = move |p: Program| {
         events.lock().unwrap().push(format!("health {}", p.name()));
         match p {
-            Program::Psp => Probe::mint("0.6.0"),
-            Program::Esp => Probe::mint("0.8.0"),
+            Program::Psp => Probe::reporting("0.6.0"),
+            Program::Esp => Probe::reporting("0.8.0"),
             _ => Probe::up(),
         }
     };
@@ -731,7 +729,7 @@ fn a_mint_that_is_not_running_is_started_by_the_restart() {
     let m = Arc::clone(&running);
     let sh = runner_with(&log, move |c| {
         if c.starts_with("systemctl restart") {
-            *m.lock().unwrap() = Probe::mint("0.6.0");
+            *m.lock().unwrap() = Probe::reporting("0.6.0");
         }
     });
     let asked = Arc::clone(&running);
@@ -763,161 +761,6 @@ fn downloads(name: &str, pin: Option<&str>) -> (Layout, FakeSource) {
         .build(Program::Psp, "0.6.0", "psp-mint 0.6.0\n")
         .build(Program::Psp, "0.7.0", "psp-mint 0.7.0\n");
     (l, source)
-}
-
-#[test]
-fn with_no_pin_the_newest_release_is_downloaded_verified_and_installed() {
-    let (l, source) = downloads("newest", None);
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let done = with_source(
-        &l.spi,
-        &[Program::Psp],
-        false,
-        &source,
-        &runner(&log),
-        &serving("0.7.0"),
-    );
-    assert!(done.ok, "{:?}", done.lines);
-    assert_eq!(text(&l.installed.join("psp-mint")), "psp-mint 0.7.0\n");
-    assert_eq!(
-        text(&l.installed.join("psp-mint.previous")),
-        "psp-mint 0.5.0\n"
-    );
-    assert_eq!(*source.fetched.lock().unwrap(), ["psp-mint 0.7.0"]);
-    assert_eq!(
-        done.lines[0],
-        format!("psp-mint: 0.5.0 -> 0.7.0 by {DOWNTIME}")
-    );
-    assert_eq!(done.lines.last().unwrap(), "psp-mint: now 0.7.0, healthy");
-    // The downloaded file is executable, and spi recorded what it installed.
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(l.installed.join("psp-mint"))
-        .unwrap()
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o111, 0o111);
-    let record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(l.spi.dir.join("installed/psp-mint.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        record,
-        serde_json::json!({
-            "version": "0.7.0",
-            "sha256": "c0356f045ce65120f78add060a2fa304ab357137b4414fa753fceec81414f615"
-        })
-    );
-}
-
-#[test]
-fn a_pin_older_than_the_newest_installs_the_pin_and_says_the_newest() {
-    let (l, source) = downloads("pinned-older", Some("0.6.0"));
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let done = with_source(
-        &l.spi,
-        &[Program::Psp],
-        false,
-        &source,
-        &runner(&log),
-        &serving("0.6.0"),
-    );
-    assert!(done.ok, "{:?}", done.lines);
-    assert_eq!(done.lines[0], "psp-mint: pinned at 0.6.0 (newest 0.7.0)");
-    assert_eq!(text(&l.installed.join("psp-mint")), "psp-mint 0.6.0\n");
-    // The newer release is reported, never installed.
-    assert_eq!(*source.fetched.lock().unwrap(), ["psp-mint 0.6.0"]);
-}
-
-#[test]
-fn a_download_that_fails_its_checksum_changes_nothing() {
-    let mut l = layout("bad-sum", false, "");
-    l.spi.psp.version = None;
-    l.spi.psp.bin = "/nowhere/psp-mint".into();
-    let wrong = "0".repeat(64);
-    let source = FakeSource::new()
-        .tags(Program::Psp, &["v0.7.0"])
-        .corrupt_build(Program::Psp, "0.7.0", "psp-mint 0.7.0\n", &wrong);
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let done = with_source(
-        &l.spi,
-        &[Program::Psp],
-        false,
-        &source,
-        &runner(&log),
-        &serving("0.7.0"),
-    );
-    assert!(!done.ok);
-    assert!(
-        done.lines.iter().any(|l| l.starts_with(
-            "FAIL: psp-mint: the download of psp-mint 0.7.0 failed its checksum (the release says 0000"
-        ) && l.ends_with("it was deleted and nothing was changed")),
-        "{:?}",
-        done.lines
-    );
-    assert_eq!(text(&l.installed.join("psp-mint")), "psp-mint 0.5.0\n");
-    assert!(!l.installed.join("psp-mint.previous").exists());
-    assert!(!l.installed.join("psp-mint.new").exists());
-    assert!(
-        !spi::release::releases_dir(&l.spi, Program::Psp, "0.7.0")
-            .join("psp-mint")
-            .exists()
-    );
-    assert!(systemctl_calls(&log).is_empty());
-    assert!(!l.spi.dir.join("installed/psp-mint.json").exists());
-}
-
-#[test]
-fn a_download_that_is_not_the_version_the_release_names_changes_nothing() {
-    let mut l = layout("wrong-build", false, "");
-    l.spi.psp.version = None;
-    let source = FakeSource::new().tags(Program::Psp, &["v0.7.0"]).build(
-        Program::Psp,
-        "0.7.0",
-        "psp-mint 0.6.1\n",
-    );
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let done = with_source(
-        &l.spi,
-        &[Program::Psp],
-        false,
-        &source,
-        &runner(&log),
-        &serving("0.7.0"),
-    );
-    assert!(!done.ok);
-    assert!(
-        done.lines[0].contains("is 0.6.1, but the release names 0.7.0: nothing was changed"),
-        "{:?}",
-        done.lines
-    );
-    assert_eq!(text(&l.installed.join("psp-mint")), "psp-mint 0.5.0\n");
-    assert!(systemctl_calls(&log).is_empty());
-}
-
-#[test]
-fn a_program_already_at_the_newest_release_is_left_alone_and_nothing_is_stopped() {
-    let (l, source) = downloads("already-newest", None);
-    std::fs::write(l.installed.join("psp-mint"), "psp-mint 0.7.0\n").unwrap();
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let done = with_source(
-        &l.spi,
-        &[Program::Psp],
-        false,
-        &source,
-        &runner(&log),
-        &serving("0.7.0"),
-    );
-    assert!(done.ok, "{:?}", done.lines);
-    assert!(done.changes.is_empty());
-    assert_eq!(
-        done.lines,
-        [
-            "psp-mint: already 0.7.0: nothing to do",
-            "everything up to date: nothing was stopped"
-        ]
-    );
-    assert!(source.fetched.lock().unwrap().is_empty());
-    assert!(systemctl_calls(&log).is_empty());
-    assert_eq!(text(&l.installed.join("psp-mint")), "psp-mint 0.7.0\n");
 }
 
 #[test]

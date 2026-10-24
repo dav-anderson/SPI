@@ -11,7 +11,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::scratch;
+use common::{exe, scratch};
 use spi::commands::{self, InstallOptions, ServiceFiles};
 use spi::config::{Inputs, Spi};
 use spi::service;
@@ -140,7 +140,8 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
         "sp-air-server-health.conf",
         "sp-air-server-health.service",
         "sp-health-monitor.sh",
-        "logrotate-sp-mint",
+        "sp-logs.service",
+        "sp-logs.timer",
         "install-system.sh",
     ] {
         let text = read(&out_dir, f);
@@ -162,6 +163,7 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
         "ExecStart=/usr/local/bin/psp-mint serve",
         "ReadWritePaths=/var/lib/sp-mint/psp-mint /var/log/sp-mint",
         "StandardOutput=append:/var/log/sp-mint/psp-mint.log",
+        "ExecStartPre=-/usr/local/bin/spi logs rotate --max-mb 50 --keep 4 /var/log/sp-mint/psp-mint.log",
         "ProtectHome=yes",
         "ProtectSystem=strict",
         "KillSignal=SIGTERM",
@@ -212,7 +214,25 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
         toml.contains("cookie = \"/var/lib/sp-mint/bitcoind/regtest/.cookie\""),
         "{toml}"
     );
-    assert!(read(&out_dir, "logrotate-sp-mint").contains("/var/log/sp-mint/*.log"));
+    // The logs stay under the cap while the services run: a timer runs `spi logs
+    // rotate --running` on every log, as root (the monitors and the upgrade job
+    // write theirs as root). Fails if a log is left out of the job, or the job
+    // stops using `--running` (a rename would leave a running service writing to
+    // the moved file).
+    let logs = read(&out_dir, "sp-logs.service");
+    assert!(
+        logs.lines().any(|l| l == "ExecStart=/usr/local/bin/spi logs rotate --running --max-mb 50 --keep 4 /var/log/sp-mint/psp-mint.log /var/log/sp-mint/esp-mint.log /var/log/sp-mint/air_server.log /var/log/sp-mint/bitcoind.log /var/log/sp-mint/psp-mint-health.log /var/log/sp-mint/esp-mint-health.log /var/log/sp-mint/sp-air-server-health.log /var/log/sp-mint/spi-upgrade.log"),
+        "{logs}"
+    );
+    assert!(!logs.contains("User="), "{logs}");
+    let timer = read(&out_dir, "sp-logs.timer");
+    for line in [
+        "OnBootSec=5min",
+        "OnUnitActiveSec=5min",
+        "Unit=sp-logs.service",
+    ] {
+        assert!(timer.lines().any(|l| l == line), "{line} not in\n{timer}");
+    }
 
     // The script: the account, the folders, the binaries it was given, the files.
     let script = read(&out_dir, "install-system.sh");
@@ -232,11 +252,15 @@ fn linux_install_with_no_sandbox_mint_writes_complete_systemd_units() {
         "put 0644 root root \"$here/esp-mint.service\" \"$unit_dir/esp-mint.service\"",
         "unit_dir=/etc/systemd/system",
         "systemctl daemon-reload",
-        "/etc/logrotate.d/sp-mint",
+        &format!("put 0755 root root {} \"$bin_dir/spi\"", exe().display()),
+        "put 0644 root root \"$here/sp-logs.timer\" \"$unit_dir/sp-logs.timer\"",
     ] {
         assert!(script.contains(needle), "{needle} not in\n{script}");
     }
     assert!(!script.contains("dscl"));
+    // The logrotate file spi used to write is removed, but only one spi wrote.
+    assert!(script.contains("grep -q 'Written by `spi install`' /etc/logrotate.d/sp-mint"));
+    assert!(!out_dir.join("logrotate-sp-mint").exists());
     shell_syntax_ok(&out_dir.join("install-system.sh"));
     shell_syntax_ok(&out_dir.join("sp-health-monitor.sh"));
 }
@@ -282,6 +306,17 @@ fn macos_install_with_no_sandbox_mint_writes_complete_plists() {
     // No systemd units on macOS.
     assert!(!out_dir.join("psp-mint.service").exists());
     assert!(!out_dir.join("logrotate-sp-mint").exists());
+    // macOS is a development machine: its service logs are not rotated, and spi
+    // adds no job, no unit and no copy of itself there. Fails if the Linux log
+    // rotation leaks into the macOS plan.
+    assert!(
+        !said.contains("sp-logs") && !said.contains("servicepoints.logs"),
+        "{said}"
+    );
+    assert!(std::fs::read_dir(&out_dir).unwrap().all(|e| {
+        let name = e.unwrap().file_name().to_string_lossy().into_owned();
+        !name.contains("sp-logs") && !name.contains("servicepoints.logs")
+    }));
 
     let psp = read(&out_dir, "org.servicepoints.psp-mint.plist");
     for needle in [
@@ -338,7 +373,7 @@ fn macos_install_with_no_sandbox_mint_writes_complete_plists() {
 fn secrets_and_health_settings_are_kept_when_they_are_already_there() {
     let dir = scratch("keep");
     let spi = load_os(&dir, &config_text(&dir, "regtest", NOWHERE, ""), false, &[]).unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     let script = &plan.files.last().unwrap().1;
     for kept in [
         "keep 0640 root \"$group\" \"$here/psp-mint.secret.env\"",
@@ -433,7 +468,7 @@ fn the_service_section_sets_the_account_the_folders_and_the_bitcoind_command() {
         &[],
     )
     .unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     let file = |n: &str| -> String {
         plan.files
             .iter()
@@ -490,7 +525,7 @@ fn the_cookie_follows_the_chain_folder_of_the_service_datadir() {
     ] {
         let dir = scratch("cookie");
         let spi = load_os(&dir, &config_text(&dir, network, "", ""), false, &[]).unwrap();
-        let plan = service::plan(&spi, None).unwrap();
+        let plan = service::plan(&spi, None, &exe()).unwrap();
         let toml = &plan
             .files
             .iter()
@@ -522,7 +557,7 @@ fn a_cookie_written_down_at_the_service_path_is_used_without_a_warning() {
         &[],
     )
     .unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
     // The AIR server's identity note is always there; there is no cookie note.
     assert_eq!(plan.notes.len(), 1, "{:?}", plan.notes);
@@ -533,7 +568,7 @@ fn a_cookie_written_down_at_the_service_path_is_used_without_a_warning() {
     // to read it as yourself.
     let dir = scratch("cookie-note");
     let spi = load_os(&dir, &config_text(&dir, "regtest", "", ""), false, &[]).unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     // The cookie note, then the AIR server's identity note.
     assert_eq!(plan.notes.len(), 2, "{:?}", plan.notes);
     assert!(plan.notes[1].contains("identity"), "{:?}", plan.notes);
@@ -558,7 +593,7 @@ fn a_bitcoind_that_spi_does_not_manage_gets_no_unit_and_a_warning_about_its_cook
         &[],
     )
     .unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     let names: Vec<&str> = plan.files.iter().map(|(n, _)| n.as_str()).collect();
     assert!(!names.contains(&"sp-bitcoind.service"));
     let psp = &plan
@@ -598,7 +633,7 @@ fn without_health_monitors_there_are_none() {
         &[],
     )
     .unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     let names: Vec<&str> = plan.files.iter().map(|(n, _)| n.as_str()).collect();
     for gone in [
         "sp-health-monitor.sh",
@@ -610,7 +645,7 @@ fn without_health_monitors_there_are_none() {
     ] {
         assert!(!names.contains(&gone), "{gone}");
     }
-    assert_eq!(plan.start.len(), 4);
+    assert_eq!(plan.start.len(), 5);
     assert_eq!(
         plan.start[0],
         "sudo systemctl enable --now sp-bitcoind.service"
@@ -624,6 +659,7 @@ fn without_health_monitors_there_are_none() {
         plan.start[3],
         "sudo systemctl enable --now psp-mint.service esp-mint.service"
     );
+    assert_eq!(plan.start[4], "sudo systemctl enable --now sp-logs.timer");
 }
 
 #[test]
@@ -634,7 +670,7 @@ fn a_binary_that_is_not_found_is_a_warning_and_a_guard_in_the_script_and_not_a_f
         "02".repeat(33)
     );
     let spi = load_os(&dir, &text, false, &[]).unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     assert_eq!(plan.warnings.len(), 4, "{:?}", plan.warnings);
     assert!(plan.warnings[0].contains("/nonexistent/psp-mint"));
     assert!(plan.warnings[0].contains("/usr/local/bin/psp-mint"));
@@ -660,7 +696,7 @@ fn ops_replaces_a_template_and_is_not_needed_for_the_rest() {
     )
     .unwrap();
     std::fs::write(ops.join("sp-health-monitor.sh"), "#!/bin/sh\necho mine\n").unwrap();
-    let plan = service::plan(&spi, Some(&ops)).unwrap();
+    let plan = service::plan(&spi, Some(&ops), &exe()).unwrap();
     let file = |n: &str| -> String {
         plan.files
             .iter()
@@ -684,19 +720,19 @@ fn ops_that_is_not_a_folder_or_has_a_bad_placeholder_stops_before_anything_is_wr
     let dir = scratch("ops-bad");
     let spi = load_os(&dir, &config_text(&dir, "regtest", NOWHERE, ""), false, &[]).unwrap();
 
-    let e = service::plan(&spi, Some(&dir.join("not-there"))).unwrap_err();
+    let e = service::plan(&spi, Some(&dir.join("not-there")), &exe()).unwrap_err();
     assert!(e.contains("is not a folder"), "{e}");
 
     let ops = dir.join("ops");
     std::fs::create_dir_all(ops.join("systemd")).unwrap();
     std::fs::write(ops.join("systemd/psp-mint.service"), "X={{no_such_key}}\n").unwrap();
-    let e = service::plan(&spi, Some(&ops)).unwrap_err();
+    let e = service::plan(&spi, Some(&ops), &exe()).unwrap_err();
     assert!(
         e.contains("{{no_such_key}}") && e.contains("psp-mint.service"),
         "{e}"
     );
     std::fs::write(ops.join("systemd/psp-mint.service"), "X={{bin_dir\n").unwrap();
-    let e = service::plan(&spi, Some(&ops)).unwrap_err();
+    let e = service::plan(&spi, Some(&ops), &exe()).unwrap_err();
     assert!(e.contains("never closed"), "{e}");
 
     // Through install: a failure, with the folder untouched.
@@ -727,7 +763,7 @@ fn definitions_with_no_placeholders_still_work_as_an_override() {
     let ops = dir.join("ops");
     std::fs::create_dir_all(ops.join("systemd")).unwrap();
     std::fs::write(ops.join("systemd/psp-mint.service"), "[Unit] fixed\n").unwrap();
-    let plan = service::plan(&spi, Some(&ops)).unwrap();
+    let plan = service::plan(&spi, Some(&ops), &exe()).unwrap();
     let psp = &plan
         .files
         .iter()
@@ -760,7 +796,7 @@ fn a_value_that_would_break_a_unit_is_refused_and_named() {
             &[],
         )
         .unwrap();
-        let e = service::plan(&spi, None).unwrap_err();
+        let e = service::plan(&spi, None, &exe()).unwrap_err();
         assert!(e.contains(needle), "{needle} not in {e}");
         let out_dir = dir.join("svc");
         let out = install_into(&spi, &out_dir);
@@ -783,7 +819,7 @@ fn a_value_that_would_break_a_unit_is_refused_and_named() {
         &[],
     )
     .unwrap();
-    assert!(service::plan(&spi, None).is_ok());
+    assert!(service::plan(&spi, None, &exe()).is_ok());
 }
 
 #[test]
@@ -858,7 +894,7 @@ fn the_service_settings_have_defaults_per_system_and_are_checked() {
 fn the_embedded_monitor_is_the_one_in_the_repository() {
     let dir = scratch("monitor");
     let spi = load_os(&dir, &config_text(&dir, "regtest", NOWHERE, ""), false, &[]).unwrap();
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     let monitor = &plan
         .files
         .iter()
@@ -870,20 +906,28 @@ fn the_embedded_monitor_is_the_one_in_the_repository() {
 }
 
 #[test]
-fn the_log_limits_reach_the_logrotate_file() {
-    let dir = scratch("logrotate");
-    let logrotate = |service: &str| -> String {
+fn the_log_limits_reach_the_units() {
+    // Fails if `[service] log_keep` or `log_max_size_mb` is dropped on the way to
+    // the units that rotate (they were once written into a logrotate file).
+    let dir = scratch("log-limits");
+    let units = |service: &str| -> (String, String) {
         let spi = load_os(&dir, &config_text(&dir, "regtest", "", service), false, &[]).unwrap();
-        let plan = service::plan(&spi, None).unwrap();
-        plan.files
-            .into_iter()
-            .find(|(n, _)| n == "logrotate-sp-mint")
-            .unwrap()
-            .1
+        let plan = service::plan(&spi, None, &exe()).unwrap();
+        let file = |name: &str| {
+            plan.files
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .1
+                .clone()
+        };
+        (file("psp-mint.service"), file("sp-logs.service"))
     };
-    assert!(
-        logrotate("log_keep = 3\nlog_max_size_mb = 20").contains("    maxsize 20M\n    rotate 3\n")
-    );
+    let (mint, logs) = units("log_keep = 3\nlog_max_size_mb = 20");
+    assert!(mint.contains("ExecStartPre=-/usr/local/bin/spi logs rotate --max-mb 20 --keep 3 /var/log/sp-mint/psp-mint.log\n"));
+    assert!(logs.contains("logs rotate --running --max-mb 20 --keep 3 "));
     // Left out, the defaults.
-    assert!(logrotate("").contains("    maxsize 50M\n    rotate 4\n"));
+    let (mint, logs) = units("");
+    assert!(mint.contains("logs rotate --max-mb 50 --keep 4 "));
+    assert!(logs.contains("logs rotate --running --max-mb 50 --keep 4 "));
 }

@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased (fix-up 4)
+## 0.2.0 (2026-10-24)
+
+ROADMAP item 32. The code spi shared with aso is the new crate [air-interface](https://github.com/dav-anderson/air-interface) (`air-interface = { git = ..., tag = "v0.1.0" }`). The unreleased work below is part of this version.
+
+- **air-interface.** The release source and its checksum check (GitHub, through `curl`), the pin and `upgrade check` code, the upgrade engine (swap, restart, wait, rollback), the schedule (`--at`, `--in`, `status`, `cancel`, the pending record), the log rotation, the service-file template expander, the AIR server's environment and nginx block, and the version lines are now air-interface's. spi implements its two traits (`Operator` on `Spi`, `Managed` on `Program`, in `src/interface.rs`) and keeps what is its own: the commands and prompts, its wording (every upgrade message is as before), the `[bitcoind]` download and signature check, the units, and its settings. `src/exec.rs`, `src/schedule.rs`, `src/release.rs` and `ops/nginx-air.conf` are gone (the nginx header is `ops/nginx-air.header`); `sha2` moved to air-interface. spi keeps `reqwest`. `air_interface` modules are re-exported from the library as `spi::exec`, `spi::release`, `spi::schedule`, `spi::logs` and `spi::template`.
+- **Every spi log is held to its size cap, on Linux, with or without logrotate.** Before, the caps were a logrotate file (weekly, and a size check once a day), so a machine without logrotate, or a log between two of its runs, was not held to the cap. Now each service unit runs `spi logs rotate` (new: `spi logs rotate [--running] [--max-mb N] [--keep N] FILE...`, which needs no `HOME` and no `spi.toml`) before its program starts, and `sp-logs.timer` runs it with `--running` every 5 minutes on every log (the mints', the AIR server's, bitcoind's, the health monitors' and the scheduled upgrade's). `[service] log_max_size_mb` and `log_keep` are the same settings; `log_keep` now counts size-rotated copies (`<log>.<epoch>.bak`), not weekly ones. A copy of `spi` is installed in `bin_dir` for the units. `spi install`'s script removes `/etc/logrotate.d/sp-mint` when spi wrote it, and `spi install` no longer writes `logrotate-sp-mint`. `spi start` (user mode) rotates a log when it opens it, as before, with the `.bak` names. macOS is unchanged: it is a development machine and its logs are not rotated.
+- **The AIR server's health answer must be the body `ok`** (status 200 and `ok`). Any other 200, such as a proxy's page, no longer counts as the AIR server being healthy.
+- **`spi versions` shows an `air-interface` line** with the version of the library spi is built on.
+- **Fix: `spi.toml` and the install records are replaced whole and at once.** A pin reset (`spi upgrade --reset-pins`) and the records of what was installed were written in place; they now go to a temporary file and are renamed over the old one, so a crash cannot leave half a file. A pin reset keeps the newest 5 backups, as before.
+- **Docs: spi is designed to run on a Linux system.** macOS is supported only as a development machine (README).
+- Tests: 216 before, 183 after. 41 moved to air-interface (the 27 schedule tests, with two new spi tests that keep spi's own unit names, label and log; the GitHub release source's three; the engine's five download tests; the template expander's five; the pin-backup test). The `spi start` log test is rewritten as two (the rotation itself is air-interface's). 7 are new: five for `spi logs rotate` (`tests/logs.rs`) and the two spi job tests. The `air-interface` line of `versions` is asserted in an existing test.
+
+### Fix-up 4 (was unreleased)
 
 - **Clippy:** `release.rs` sorts with `sort_by_key` and `Reverse`.
 - **Never a release candidate.** A folder or tag with a non-numeric part (`30.1rc1`, `test.rc*`) or a GitHub pre-release is never picked as the newest and never installed; a pin on one is refused at config load with a message that says so.
@@ -9,7 +21,7 @@
 - **bitcoind's signatures are always checked** (`src/signature.rs`): gpg, a private keyring `<spi dir>/gnupg`, 18 compiled-in builders, `[bitcoind] min_signatures` (7), `[bitcoind] signers`, `[release] builder_keys_url`. No gpg, no bitcoind download.
 - Tests (none run): `tests/signature.rs`, and cases in `tests/fetch.rs`, `tests/collect_reload.rs`, `tests/mints_and_bitcoind.rs`, `tests/service_files.rs`, `tests/versions_upgrade.rs`.
 
-## Unreleased (fix-ups 1 to 3 and the SPI gaps)
+### Fix-ups 1 to 3 and the SPI gaps (was unreleased)
 
 - **The SPI gaps (ROADMAP item 20).** The AIR server is managed: `[air]` (name, host, bin, manage, ws_addr, health_addr, identity, storage, tls_*, public_*, fee_*, version), its unit or plist, env file, health monitor and optional nginx file, started between bitcoind and the mints, shown in `status`. The mints' `air.server` and `air.host` are generated from it. A non-zero `fee_read` or `fee_write` is refused (stock air_server 1.0.1 has no fee hook; upstream item 1).
 - **The SPI's own ecash-wallet:** `generated/ecash-wallet.toml` from `[air]` and the mints' DIDs, `[wallet]` and `[wallet.settings]`, shown with sources by `config show`.

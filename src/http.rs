@@ -1,4 +1,5 @@
-//! The few HTTP calls `spi` makes: a GET that returns the status and the JSON.
+//! The few HTTP calls `spi` makes: a GET that returns the status and the JSON,
+//! and one that returns the status and the text.
 
 use std::time::Duration;
 
@@ -16,6 +17,13 @@ pub const TRIES: u32 = 3;
 /// again, up to [`TRIES`] times, a moment apart: a GET changes nothing. A
 /// refused connection (nothing is listening) and a timeout are not tried again.
 pub fn get_json(url: &str) -> Result<(u16, Value), String> {
+    let (status, body) = get_text(url)?;
+    Ok((status, serde_json::from_str(&body).unwrap_or(Value::Null)))
+}
+
+/// `GET url`: the status code and the body as text, tried again as [`get_json`]
+/// is.
+pub fn get_text(url: &str) -> Result<(u16, String), String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(TIMEOUT)
         .build()
@@ -26,7 +34,7 @@ pub fn get_json(url: &str) -> Result<(u16, Value), String> {
             Ok(response) => {
                 let status = response.status().as_u16();
                 let body = response.text().map_err(|e| e.to_string())?;
-                return Ok((status, serde_json::from_str(&body).unwrap_or(Value::Null)));
+                return Ok((status, body));
             }
             Err(e) if e.is_timeout() || e.is_connect() => {
                 return Err(format!("cannot reach {url}: {e}"));

@@ -1,15 +1,16 @@
-//! The real release source: releases are listed and downloaded with `curl`,
-//! run through the same [`Exec`] as every other program (no HTTP crate).
+//! spi's release source: GitHub releases for psp-mint and esp-mint (the shared
+//! [`Github`] source in air-interface) and bitcoincore.org for bitcoind, through
+//! `curl`, run through the same [`Exec`] as every other program (no HTTP crate).
 //!
 //! - psp-mint and esp-mint: the GitHub API lists a repository's releases and
 //!   their assets. The archive is `<program>-<version>-<os>-<arch>.tar.gz`
 //!   (`os` is `linux` or `macos`, `arch` is `x86_64` or `aarch64`) and the
-//!   release carries a `SHA256SUMS` asset.
+//!   release carries a `SHA256SUMS` asset. All of that is air-interface's.
 //! - bitcoind: bitcoincore.org keeps one folder per release, `bin/bitcoin-core-<version>/`,
-//!   with `bitcoin-<version>-<cpu>-<os>.tar.gz` and `SHA256SUMS`.
+//!   with `bitcoin-<version>-<cpu>-<os>.tar.gz` and `SHA256SUMS`. This is spi's.
 //!
-//! The archive's SHA-256 is checked against `SHA256SUMS` here, before anything
-//! is unpacked. For bitcoind the signatures on `SHA256SUMS` are checked first
+//! The archive's SHA-256 is checked against `SHA256SUMS` before anything is
+//! unpacked. For bitcoind the signatures on `SHA256SUMS` are checked first
 //! (see [`crate::signature`]): a checksum served beside the file does not stop
 //! a hijacked download, the builders' signatures do. A release candidate is
 //! never offered: a folder with no `SHA256SUMS` is skipped, and a tag with
@@ -18,39 +19,21 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use air_interface::Managed;
+use air_interface::exec::Exec;
+use air_interface::github::{Archive, Github};
+use air_interface::release::{self, Download, Source};
+use air_interface::version::{Tags, same_version};
 
 use crate::config::Spi;
-use crate::exec::Exec;
-use crate::release::{self, Download, Source};
 use crate::signature;
-use crate::upgrade::{self, Program};
-use crate::versions;
-
-#[derive(Deserialize)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
-}
-
-#[derive(Deserialize)]
-struct Rel {
-    tag_name: String,
-    #[serde(default)]
-    draft: bool,
-    #[serde(default)]
-    prerelease: bool,
-    #[serde(default)]
-    assets: Vec<Asset>,
-}
+use crate::upgrade::Program;
 
 /// GitHub releases and bitcoincore.org, through `curl`.
 pub struct CurlSource<'a> {
+    github: Github<'a>,
     exec: &'a dyn Exec,
-    api: String,
     bitcoin: String,
-    os: &'static str,
-    arch: String,
     /// Bitcoin Core's signatures: the private keyring, where the builders' keys
     /// are, who is trusted and how many must have signed.
     gnupg: PathBuf,
@@ -74,11 +57,9 @@ impl<'a> CurlSource<'a> {
         arch: &str,
     ) -> CurlSource<'a> {
         CurlSource {
+            github: Github::for_machine(spi, exec, os, arch),
             exec,
-            api: spi.release.url.clone(),
             bitcoin: spi.release.bitcoin_url.clone(),
-            os,
-            arch: arch.to_string(),
             gnupg: spi.dir.join("gnupg"),
             keys_url: spi.release.builder_keys_url.clone(),
             signers: spi.bitcoind_signers.clone().unwrap_or_else(|| {
@@ -104,7 +85,8 @@ impl<'a> CurlSource<'a> {
         fs::create_dir_all(&work).map_err(|e| format!("cannot create {}: {e}", work.display()))?;
         let (sums_file, asc) = (work.join("SHA256SUMS"), work.join("SHA256SUMS.asc"));
         let get = |url: &str, to: &Path| {
-            self.curl(&["-o", &to.display().to_string(), url])
+            self.github
+                .curl(&["-o", &to.display().to_string(), url])
                 .map(|_| ())
         };
         let result = fs::write(&sums_file, sums)
@@ -127,110 +109,24 @@ impl<'a> CurlSource<'a> {
         result
     }
 
-    fn curl(&self, args: &[&str]) -> Result<String, String> {
-        let mut all: Vec<String> = ["-fsSL", "--max-time", "900"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        all.extend(args.iter().map(|s| s.to_string()));
-        let ran = self.exec.run("curl", &all, &[]).map_err(|e| {
-            format!("{e} (spi downloads releases with curl: install curl, or put the build in place and name it with `bin`)")
-        })?;
-        if ran.ok() {
-            Ok(ran.stdout)
-        } else {
-            Err(format!(
-                "curl {}: {}",
-                args.last().unwrap_or(&""),
-                ran.last_line()
-            ))
-        }
+    /// The bitcoind archive for this machine: its name, where it is, and where
+    /// the release's `SHA256SUMS` is.
+    fn bitcoind_archive(&self, version: &str) -> Result<Archive, String> {
+        let cpu = match (self.github.os, self.github.arch.as_str()) {
+            ("linux", "x86_64") => "x86_64-linux-gnu",
+            ("linux", "aarch64") => "aarch64-linux-gnu",
+            ("macos", "x86_64") => "x86_64-apple-darwin",
+            ("macos", "aarch64") => "arm64-apple-darwin",
+            (os, arch) => return Err(format!("Bitcoin Core has no build for {os} on {arch}")),
+        };
+        let name = format!("bitcoin-{version}-{cpu}.tar.gz");
+        let base = format!("{}/bin/bitcoin-core-{version}", self.bitcoin);
+        Ok(Archive {
+            url: format!("{base}/{name}"),
+            sums_url: format!("{base}/SHA256SUMS"),
+            name,
+        })
     }
-
-    fn releases(&self, program: Program) -> Result<Vec<Rel>, String> {
-        let url = format!(
-            "{}/repos/dav-anderson/{}/releases?per_page=100",
-            self.api,
-            program.name()
-        );
-        let body = self.curl(&["-H", "Accept: application/vnd.github+json", &url])?;
-        let list: Vec<Rel> = serde_json::from_str(&body)
-            .map_err(|e| format!("the release list at {url} is not what GitHub sends: {e}"))?;
-        Ok(list.into_iter().filter(|r| !r.draft).collect())
-    }
-
-    /// The archive for this machine: its name, where it is, and where the
-    /// release's `SHA256SUMS` is.
-    fn archive(&self, program: Program, version: &str) -> Result<(String, String, String), String> {
-        if program == Program::Bitcoind {
-            let cpu = match (self.os, self.arch.as_str()) {
-                ("linux", "x86_64") => "x86_64-linux-gnu",
-                ("linux", "aarch64") => "aarch64-linux-gnu",
-                ("macos", "x86_64") => "x86_64-apple-darwin",
-                ("macos", "aarch64") => "arm64-apple-darwin",
-                (os, arch) => return Err(format!("Bitcoin Core has no build for {os} on {arch}")),
-            };
-            let name = format!("bitcoin-{version}-{cpu}.tar.gz");
-            let base = format!("{}/bin/bitcoin-core-{version}", self.bitcoin);
-            return Ok((
-                name.clone(),
-                format!("{base}/{name}"),
-                format!("{base}/SHA256SUMS"),
-            ));
-        }
-        let list = self.releases(program)?;
-        let Some(rel) = list
-            .into_iter()
-            .find(|r| r.tag_name.strip_prefix('v').unwrap_or(&r.tag_name) == version)
-        else {
-            return Err(format!("{} has no release {version}", program.name()));
-        };
-        if rel.prerelease {
-            return Err(format!(
-                "{} {version} is marked as a pre-release on GitHub; spi installs releases only",
-                program.name()
-            ));
-        }
-        let name = format!(
-            "{}-{version}-{}-{}.tar.gz",
-            program.name(),
-            self.os,
-            self.arch
-        );
-        let find = |wanted: &str| {
-            rel.assets
-                .iter()
-                .find(|a| a.name == wanted)
-                .map(|a| a.browser_download_url.clone())
-        };
-        let Some(url) = find(&name) else {
-            let have: Vec<&str> = rel.assets.iter().map(|a| a.name.as_str()).collect();
-            return Err(format!(
-                "release {} of {} has no archive for this machine ({} on {}): expected {name}, it has {}",
-                rel.tag_name,
-                program.name(),
-                self.os,
-                self.arch,
-                have.join(", ")
-            ));
-        };
-        let Some(sums) = find("SHA256SUMS") else {
-            return Err(format!(
-                "release {} of {} has no SHA256SUMS",
-                rel.tag_name,
-                program.name()
-            ));
-        };
-        Ok((name, url, sums))
-    }
-}
-
-/// The SHA-256 `SHA256SUMS` (`<hex>  <name>` lines) gives for `name`.
-fn sum_for(sums: &str, name: &str) -> Option<String> {
-    sums.lines().find_map(|line| {
-        let (hex, file) = line.split_once(char::is_whitespace)?;
-        (file.trim().trim_start_matches('*') == name).then(|| hex.to_string())
-    })
 }
 
 /// The versions bitcoincore.org lists: every `bitcoin-core-<digits and dots>/`.
@@ -248,93 +144,37 @@ fn bitcoin_versions(index: &str) -> Vec<String> {
     out
 }
 
-/// The first file called `name` under `dir`.
-fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_file(&path, name) {
-                return Some(found);
-            }
-        } else if path.file_name().is_some_and(|n| n == name) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-impl Source for CurlSource<'_> {
+impl Source<Program> for CurlSource<'_> {
     fn tags(&self, program: Program) -> Result<Vec<String>, String> {
         match program {
             Program::Air => Err("air_server publishes no releases".into()),
             Program::Bitcoind => {
-                let index = self.curl(&[&format!("{}/bin/", self.bitcoin)])?;
+                let index = self.github.curl(&[&format!("{}/bin/", self.bitcoin)])?;
                 let mut all = bitcoin_versions(&index);
                 // A folder can exist before its release does (32.0 held only
                 // `test.rc*` folders): drop the newest until one has SHA256SUMS.
-                while let Some(newest) = release::newest(&all) {
+                while let Some(newest) = Tags::Loose.newest(&all) {
                     let sums = format!("{}/bin/bitcoin-core-{newest}/SHA256SUMS", self.bitcoin);
-                    if self.curl(&[&sums]).is_ok() {
+                    if self.github.curl(&[&sums]).is_ok() {
                         break;
                     }
                     all.retain(|v| *v != newest);
                 }
                 Ok(all)
             }
-            Program::Psp | Program::Esp => Ok(self
-                .releases(program)?
-                .into_iter()
-                .filter(|r| !r.prerelease)
-                .map(|r| r.tag_name)
-                .collect()),
+            Program::Psp | Program::Esp => self.github.tags_of(program.name()),
         }
     }
 
     fn fetch(&self, program: Program, version: &str, dir: &Path) -> Result<Download, String> {
-        let (name, url, sums_url) = self.archive(program, version)?;
-        let sums = self.curl(&[&sums_url])?;
-        if program == Program::Bitcoind {
-            self.verify_sums(version, &sums, &sums_url, dir)?;
+        if program != Program::Bitcoind {
+            return self.github.fetch_release(program.name(), version, dir);
         }
-        let Some(published) = sum_for(&sums, &name) else {
-            return Err(format!("{sums_url} does not list {name}"));
-        };
-        fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-        let archive = dir.join(&name);
-        let unpacked = dir.join("unpacked");
-        let result = (|| {
-            self.curl(&["-o", &archive.display().to_string(), &url])?;
-            let have = versions::sha256_file(&archive)?;
-            if !have.eq_ignore_ascii_case(&published) {
-                return Err(format!(
-                    "the download of {name} failed its checksum (SHA256SUMS says {published}, the file is {have}): it was deleted and nothing was changed"
-                ));
-            }
-            let args = [
-                "-xzf".to_string(),
-                archive.display().to_string(),
-                "-C".into(),
-                unpacked.display().to_string(),
-            ];
-            fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
-            let ran = self.exec.run("tar", &args, &[])?;
-            if !ran.ok() {
-                return Err(format!("cannot unpack {name}: {}", ran.last_line()));
-            }
-            let found = find_file(&unpacked, program.name())
-                .ok_or_else(|| format!("{name} holds no file called {}", program.name()))?;
-            let file = dir.join(program.name());
-            fs::rename(&found, &file)
-                .map_err(|e| format!("cannot move {}: {e}", found.display()))?;
-            release::make_executable(&file)?;
-            Ok(Download {
-                sha256: versions::sha256_file(&file)?,
-                file,
+        let archive = self.bitcoind_archive(version)?;
+        self.github
+            .fetch_with(program.name(), &archive, dir, &|sums, sums_url| {
+                self.verify_sums(version, sums, sums_url, dir)
             })
-        })();
-        let _ = fs::remove_file(&archive);
-        let _ = fs::remove_dir_all(&unpacked);
-        result
     }
 }
 
@@ -345,7 +185,7 @@ impl Source for CurlSource<'_> {
 pub fn prepare_install(
     spi: &Spi,
     exec: &dyn Exec,
-    source: &dyn Source,
+    source: &dyn Source<Program>,
 ) -> Result<(Spi, Vec<String>), String> {
     let mut lines = Vec::new();
     if !exec
@@ -358,7 +198,7 @@ pub fn prepare_install(
         return Ok((spi.clone(), lines));
     }
     let version = match Program::Bitcoind.pin(spi) {
-        Some(pin) => pin.to_string(),
+        Some(pin) => pin,
         None => release::newest_of(source, Program::Bitcoind)
             .map_err(|e| format!("cannot find the newest Bitcoin Core: {e} (set `version` under [bitcoind] to use a download you already have, or `bin` for your own bitcoind)"))?
             .ok_or("bitcoincore.org lists no Bitcoin Core release")?,
@@ -369,8 +209,8 @@ pub fn prepare_install(
         signature::require_gpg(exec)?;
         source.fetch(Program::Bitcoind, &version, &dir)?;
     }
-    let found = upgrade::reported(spi, exec, Program::Bitcoind, &file)?;
-    if !versions::same_version(&found, &version) {
+    let found = Program::Bitcoind.reported(spi, exec, &file)?;
+    if !same_version(&found, &version) {
         return Err(format!("{} is {found}, not {version}", file.display()));
     }
     lines.push(format!(

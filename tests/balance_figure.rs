@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::{fake, load, ran, scratch, stub, wallet_holding};
+use common::{exe, fake, load, ran, scratch, stub, wallet_holding};
 use serde_json::{Value, json};
 use spi::balance_figure;
 use spi::commands;
@@ -409,7 +409,7 @@ fn the_service_files_make_spi_share_and_point_psp_mint_at_it() {
     let want_group_line = "install -d -m 0770 -o \"$user\" -g \"$group\" \"$data_dir/spi-share\"";
     for os in ["linux", "macos"] {
         let spi = spi_for(&dir, os, "[psp]\nburn = true\nburn_threshold_psp = 9\n");
-        let plan = service::plan(&spi, None).unwrap();
+        let plan = service::plan(&spi, None, &exe()).unwrap();
         let toml = &plan
             .files
             .iter()
@@ -433,7 +433,7 @@ fn the_service_files_make_spi_share_and_point_psp_mint_at_it() {
 
     // Burning off: the folder is there, psp-mint is not told about it.
     let spi = spi_for(&dir, "linux", "");
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     let toml = &plan
         .files
         .iter()
@@ -449,7 +449,7 @@ fn the_service_files_make_spi_share_and_point_psp_mint_at_it() {
         "linux",
         "[psp]\nburn = true\nburn_balance_file = \"/srv/x/b.json\"\n",
     );
-    let plan = service::plan(&spi, None).unwrap();
+    let plan = service::plan(&spi, None, &exe()).unwrap();
     let toml = &plan
         .files
         .iter()

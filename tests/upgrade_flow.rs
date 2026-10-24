@@ -170,7 +170,7 @@ struct Run {
 /// `target` on /health, and the clock at `at`.
 fn go(
     w: &World,
-    source: &dyn Source,
+    source: &dyn Source<Program>,
     answers: (bool, Option<bool>),
     target: &'static str,
     at: &Zoned,
@@ -192,7 +192,7 @@ fn go(
     };
     let probe = move |p: Program| {
         if p.is_mint() {
-            Probe::mint(target)
+            Probe::reporting(target)
         } else {
             Probe::up()
         }
@@ -229,7 +229,7 @@ const NOW: Case = Case {
 
 fn upgrade_run(
     w: &World,
-    source: &dyn Source,
+    source: &dyn Source<Program>,
     answers: (bool, Option<bool>),
     target: &'static str,
     case: Case,
@@ -250,7 +250,7 @@ fn upgrade_run(
     })
 }
 
-fn scheduled_run(w: &World, source: &dyn Source, target: &'static str, at: &Zoned) -> Run {
+fn scheduled_run(w: &World, source: &dyn Source<Program>, target: &'static str, at: &Zoned) -> Run {
     go(w, source, (false, None), target, at, &|spi, around| {
         commands::run_scheduled(spi, 0, around)
     })
@@ -728,8 +728,15 @@ fn keeping_the_pin_installs_it_and_leaves_spi_toml_alone() {
 fn resetting_the_pin_installs_the_newest_and_removes_only_the_version_line() {
     let w = world("pin-reset", false, Some("0.6.0"));
     let original = text(&w.config);
+    // Six older backups: the reset keeps the newest five files in all (the new
+    // one and four of these), so the two oldest go. Fails if spi passes a
+    // different keep count to the shared `reset_pins`.
+    let old = |epoch: i64| w.dir.join(format!("spi.toml.{epoch}.bak"));
+    (1..=6).for_each(|epoch| std::fs::write(old(epoch), "old").unwrap());
     let run = upgrade_run(&w, &source(), (true, Some(true)), "0.7.0", NOW);
     assert!(run.out.ok, "{:?}", run.out.lines);
+    assert!(!old(1).exists() && !old(2).exists());
+    assert!((3..=6).all(|epoch| old(epoch).exists()));
     assert_eq!(text(&w.installed.join("psp-mint")), "psp-mint 0.7.0\n");
     // Everything else is as it was, the comments included; the air pin too.
     let expected = config_text(&w.installed, &w.dir.join("new"), None);
@@ -852,7 +859,7 @@ fn a_reset_chosen_when_scheduling_is_done_by_the_scheduled_run_and_not_before() 
 
 // ---- spi upgrade check ----
 
-fn checked(w: &World, source: &dyn Source) -> commands::Checked {
+fn checked(w: &World, source: &dyn Source<Program>) -> commands::Checked {
     commands::upgrade_check(&w.spi, &w.exec, source)
 }
 
@@ -867,7 +874,7 @@ fn check_source() -> FakeSource {
 fn check_gives_a_line_per_program_and_changes_nothing() {
     let w = world("check", false, None);
     let c = checked(&w, &check_source());
-    let json = serde_json::to_value(&c.lines).unwrap();
+    let json = serde_json::to_value(c.json()).unwrap();
     assert_eq!(
         json,
         serde_json::json!([
@@ -902,7 +909,7 @@ fn check_gives_a_line_per_program_and_changes_nothing() {
 fn check_text_has_the_summary_line_last() {
     let w = world("check-text", false, None);
     let c = checked(&w, &check_source());
-    let text = spi::release::render(&c.lines);
+    let text = spi::release::render(&c.lines, "spi.toml", 10);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
         lines[2],

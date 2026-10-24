@@ -21,10 +21,11 @@ use crate::signature;
 /// Versions of each program kept under `<spi dir>/releases/`: the installed one
 /// and the one before it, which is what a rollback needs.
 pub const DEFAULT_RELEASES_KEPT: u64 = 2;
-/// Rotated logs kept (weekly), and the size in MB that rotates a log early.
+/// Rotated copies of a log kept (`<log>.<epoch>.bak`).
 pub const DEFAULT_LOG_KEEP: u64 = 4;
 /// Days a reissued-PSP file is kept after `spi collect` took it in.
 pub const DEFAULT_REVENUE_KEEP_DAYS: u64 = 90;
+/// The size in MB past which a log is moved aside.
 pub const DEFAULT_LOG_MAX_SIZE_MB: u64 = 50;
 
 pub const DEFAULT_PSP_BIND: &str = "127.0.0.1:3000";
@@ -232,8 +233,9 @@ pub struct Service {
     pub log_dir: String,
     /// Whether a health monitor is installed for each mint.
     pub health: bool,
-    /// How many rotated logs to keep, and the size in MB past which a log is
-    /// rotated before its week is out (Linux: written into the logrotate file).
+    /// How many rotated copies of a log to keep, and the size in MB past which a
+    /// log is moved aside (Linux: `spi logs rotate`, run by the units and by
+    /// `sp-logs.timer`; macOS does not rotate service logs).
     pub log_keep: u64,
     pub log_max_size_mb: u64,
 }
@@ -1555,8 +1557,8 @@ network = \"regtest\"
 # data_dir = \"/var/lib/sp-mint\"
 # log_dir = \"/var/log/sp-mint\"
 # health = true               # a health monitor for each mint
-# log_keep = 4                # rotated logs kept (Linux: written into the logrotate file)
-# log_max_size_mb = 50        # a log bigger than this is rotated before its week is out
+# log_keep = 4                # rotated copies of a log kept (Linux)
+# log_max_size_mb = 50        # a log bigger than this is moved aside (Linux)
 
 # Where `spi upgrade` gets releases, and how many downloaded versions of each
 # program it keeps (the installed one and the one before it are never removed):

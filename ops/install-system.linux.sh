@@ -66,8 +66,13 @@ chmod 2770 "$data_dir/spi-share"
 
 {{installs}}
 
-if [ -d /etc/logrotate.d ]; then
-    put 0644 root root "$here/logrotate-sp-mint" /etc/logrotate.d/sp-mint
+# Earlier versions of spi wrote a logrotate file for these logs. spi now rotates
+# them itself (at every start, and every few minutes while the services run, by
+# sp-logs.timer), so that file is removed, when spi wrote it, to keep two
+# rotations from working on one log. A logrotate file that is yours is left.
+if [ -f /etc/logrotate.d/sp-mint ] && grep -q 'Written by `spi install`' /etc/logrotate.d/sp-mint; then
+    rm -f /etc/logrotate.d/sp-mint
+    echo "removed /etc/logrotate.d/sp-mint (spi rotates its logs itself now)"
 fi
 
 systemctl daemon-reload

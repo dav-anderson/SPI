@@ -1,24 +1,15 @@
-//! The real release source, `curl` and `tar` included, against a stub server:
-//! the archive for the machine, a checksum that fails, a release with no
-//! archive for the machine, and bitcoind from bitcoincore.org.
+//! bitcoind from bitcoincore.org through the real `curl` and `tar`, against a stub
+//! server: listed, downloaded, checked against its signed `SHA256SUMS` and
+//! unpacked. (The GitHub half of the release source is air-interface's test.)
 
 mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::{LINUX_ARCHIVE, MAC_ARCHIVE, Seen, github, load, scratch, sha, stub_bytes, tarball};
-use spi::exec::System;
+use common::{Seen, load, scratch, sha, stub_bytes, tarball};
 use spi::fetch::CurlSource;
 use spi::release::Source;
 use spi::upgrade::Program;
-
-/// The source for a machine of `os` and `arch`, with GitHub and bitcoincore.org
-/// both at `addr`.
-fn curl_for(addr: &str, os: &'static str, arch: &str) -> CurlSource<'static> {
-    let text = format!("[release]\nurl = \"http://{addr}\"\nbitcoin_url = \"http://{addr}\"\n");
-    let spi = load(&scratch("config"), Some(text.as_str())).unwrap();
-    CurlSource::for_machine(&spi, &System, os, arch)
-}
 
 /// The Linux source for bitcoind, whose gpg says `status` about the signatures.
 fn curl_gpg(addr: &str, status: String) -> CurlSource<'static> {
@@ -28,47 +19,6 @@ fn curl_gpg(addr: &str, status: String) -> CurlSource<'static> {
     );
     let spi = load(&scratch("config"), Some(text.as_str())).unwrap();
     CurlSource::for_machine(&spi, exec, "linux", "x86_64")
-}
-
-#[test]
-fn the_archive_for_this_machine_is_the_one_downloaded_and_unpacked() {
-    let (addr, seen) = github(false);
-    let dir = scratch("mac").join("0.6.0");
-    let curl = curl_for(&addr, "macos", "aarch64");
-    let got = curl.fetch(Program::Psp, "0.6.0", &dir).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(got.file).unwrap(),
-        "psp-mint 0.6.0\n"
-    );
-    let asked = |name: &str| seen.lock().unwrap().iter().any(|s| s.path.ends_with(name));
-    assert!(asked(MAC_ARCHIVE) && !asked(LINUX_ARCHIVE));
-}
-
-#[test]
-fn a_download_that_fails_its_checksum_is_deleted_and_nothing_is_left() {
-    let (addr, _) = github(true);
-    let dir = scratch("bad").join("0.6.0");
-    let curl = curl_for(&addr, "linux", "x86_64");
-    let err = curl.fetch(Program::Psp, "0.6.0", &dir).unwrap_err();
-    assert!(
-        err.contains("failed its checksum") && err.contains(&"0".repeat(64)),
-        "{err}"
-    );
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-#[test]
-fn a_release_with_no_archive_for_this_machine_is_refused_and_says_so() {
-    let (addr, _) = github(false);
-    let dir = scratch("none").join("0.6.0");
-    let curl = curl_for(&addr, "linux", "riscv64");
-    let err = curl.fetch(Program::Psp, "0.6.0", &dir).unwrap_err();
-    assert!(
-        err.contains("has no archive for this machine (linux on riscv64)")
-            && err.contains(LINUX_ARCHIVE),
-        "{err}"
-    );
-    assert!(!dir.exists());
 }
 
 // ---- bitcoind from bitcoincore.org ----

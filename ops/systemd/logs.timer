@@ -1,0 +1,12 @@
+# Written by `spi install`: the log cap is checked every {{minutes}} minutes while
+# the services run. A missed run is not made up: the next one covers it.
+[Unit]
+Description=Service Points: when the service logs are checked against their size cap
+
+[Timer]
+OnBootSec={{minutes}}min
+OnUnitActiveSec={{minutes}}min
+Unit=sp-logs.service
+
+[Install]
+WantedBy=timers.target

@@ -480,19 +480,33 @@ fn collect_removes_old_taken_in_files_and_never_one_not_taken_in() {
 }
 
 #[test]
-fn spi_start_rotates_a_log_over_the_limit() {
-    let log = scratch("rotate").join("psp-mint.log");
+fn spi_start_moves_a_log_over_the_limit_aside_and_starts_a_fresh_one() {
+    // Fails if `open_log` stops rotating (the log would still hold 1.1 MB and no
+    // `.bak` would exist), or if it rotates but leaves no log to append to.
+    let dir = scratch("rotate");
+    let log = dir.join("psp-mint.log");
     std::fs::write(&log, vec![b'x'; 1_100_000]).unwrap();
-    run::rotate_log(&log, 1, 1);
-    assert!(log.with_extension("log.1").exists() && !log.exists());
+    drop(run::open_log(&log, 1, 1).unwrap());
+    let baks: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("psp-mint.log.") && n.ends_with(".bak"))
+        .collect();
+    assert_eq!(baks.len(), 1, "{baks:?}");
+    assert_eq!(
+        std::fs::metadata(dir.join(&baks[0])).unwrap().len(),
+        1_100_000
+    );
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
 }
 
 #[test]
-fn a_pin_reset_keeps_only_the_newest_five_backups() {
-    let config = scratch("baks").join("spi.toml");
-    std::fs::write(&config, "[psp]\nversion = \"0.6.0\"\n").unwrap();
-    let at = |epoch: i64| PathBuf::from(format!("{}.{epoch}.bak", config.display()));
-    (1..=6).for_each(|epoch| std::fs::write(at(epoch), "old").unwrap());
-    spi::release::reset_pins(&config, &[spi::upgrade::Program::Psp], 100).unwrap();
-    assert!(at(100).exists() && at(3).exists() && !at(2).exists() && !at(1).exists());
+fn spi_start_leaves_a_log_under_the_limit_alone() {
+    // Fails if `open_log` rotates a log that is not over the cap.
+    let dir = scratch("rotate-small");
+    let log = dir.join("psp-mint.log");
+    std::fs::write(&log, "short\n").unwrap();
+    drop(run::open_log(&log, 1, 1).unwrap());
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "short\n");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 }

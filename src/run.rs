@@ -37,6 +37,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use air_interface::{air, logs};
+
 use crate::bitcoind::{Chain, Node, Rpc};
 use crate::config::{Network, Spi, Which, url_of};
 use crate::{commands, generate, http};
@@ -105,8 +107,13 @@ pub fn air_health_url(spi: &Spi) -> String {
     format!("{}/", url_of(&spi.air.health_addr))
 }
 
+/// Whether the AIR server's health listener answers `ok` (air-interface's
+/// check, the same one aso makes: any other 200 is not air_server).
 pub fn air_healthy(spi: &Spi) -> bool {
-    matches!(http::get_json(&air_health_url(spi)), Ok((200, _)))
+    matches!(
+        http::get_text(&air_health_url(spi)),
+        Ok((status, body)) if air::healthy(status, &body)
+    )
 }
 
 fn wait_healthy(spi: &Spi, which: Which, secs: u64) -> bool {
@@ -240,23 +247,13 @@ pub fn start_air(spi: &Spi, wait_secs: u64) -> Result<String, String> {
     ))
 }
 
-/// Move `path` aside if it is over `max_mb` MB: it becomes `<path>.1`, the
-/// copies already there move up one, and the one past `keep` is removed. For
-/// `spi start`, which opens a log only when nothing is writing to it.
-pub fn rotate_log(path: &Path, keep: u64, max_mb: u64) {
-    if fs::metadata(path).is_ok_and(|m| m.len() > max_mb * 1024 * 1024) {
-        let old = |n: u64| format!("{}.{n}", path.display());
-        let _ = fs::remove_file(old(keep));
-        for n in (1..keep).rev() {
-            let _ = fs::rename(old(n), old(n + 1));
-        }
-        let _ = fs::rename(path, old(1));
-    }
-}
-
-/// Open a log for appending, rotating it first if it is over the limit.
-fn open_log(path: &Path, keep: u64, max_mb: u64) -> Result<fs::File, String> {
-    rotate_log(path, keep, max_mb);
+/// Open a log for appending, moving it aside first if it is over `max_mb` MB
+/// (`<log>.<epoch>.bak`, only the newest `keep` of those stay): the rule every
+/// spi log follows (air-interface's `logs`). For `spi start`, which opens a log
+/// only when nothing is writing to it. A rotation that fails never stops the
+/// start: the log is then appended to as it is.
+pub fn open_log(path: &Path, keep: u64, max_mb: u64) -> Result<fs::File, String> {
+    let _ = logs::rotate(path, max_mb, keep, logs::now_secs());
     OpenOptions::new()
         .create(true)
         .append(true)

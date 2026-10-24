@@ -12,6 +12,7 @@
 //! mints always point at the server spi runs) and for the SPI's own
 //! ecash-wallet (`render_wallet`).
 
+use air_interface::air;
 use toml::{Table, Value};
 
 use crate::config::{Spi, Which};
@@ -206,18 +207,20 @@ pub fn render_wallet(
 /// is the service's layout (`[service]` folders) or `spi start`'s.
 pub fn air_env(spi: &Spi, service: bool) -> Vec<(String, String)> {
     let a = &spi.air;
-    let mut env = vec![
-        ("AIR_SECRET_FILE".to_string(), spi.air_identity(service)),
-        ("AIR_STORAGE".to_string(), spi.air_storage(service)),
-        ("AIR_WS_ADDR".to_string(), a.ws_addr.clone()),
-        ("AIR_HEALTH_ADDR".to_string(), a.health_addr.clone()),
-    ];
-    if let (Some(addr), Some(cert), Some(key)) = (&a.tls_addr, &a.tls_cert, &a.tls_key) {
-        env.push(("AIR_TLS_ADDR".to_string(), addr.clone()));
-        env.push(("AIR_TLS_CERT".to_string(), cert.clone()));
-        env.push(("AIR_TLS_KEY".to_string(), key.clone()));
+    let identity = spi.air_identity(service);
+    let storage = spi.air_storage(service);
+    let tls = match (&a.tls_addr, &a.tls_cert, &a.tls_key) {
+        (Some(addr), Some(cert), Some(key)) => Some(air::Tls { addr, cert, key }),
+        _ => None,
+    };
+    air::Env {
+        identity: Some(&identity),
+        storage: &storage,
+        ws_addr: &a.ws_addr,
+        health_addr: &a.health_addr,
+        tls,
     }
-    env
+    .pairs(air::IdentityAt::First)
 }
 
 /// The file text: the header, then the settings.

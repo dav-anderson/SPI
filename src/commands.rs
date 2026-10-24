@@ -3,6 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use air_interface::Managed;
+use air_interface::files::find_binary;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::audit;
@@ -10,6 +13,7 @@ use crate::balance_figure;
 use crate::bitcoind::{Node, Rpc, WalletAction};
 use crate::config::{STARTER, Spi, Which, is_key_hex, url_of};
 use crate::exec::{Exec, System};
+use crate::interface::unpinned;
 use crate::upgrade::{self, Program};
 use crate::{generate, http, run, service, setup, versions, wallet};
 use crate::{release, schedule};
@@ -211,7 +215,7 @@ pub fn install(spi: &Spi, opts: &InstallOptions) -> Outcome {
         }
     }
     if spi.air.manage {
-        match (&spi.air.version, service::find_binary(&spi.air.bin)) {
+        match (&spi.air.version, find_binary(&spi.air.bin)) {
             (Some(v), Some(bin)) => match versions::record_air(spi, &bin, v) {
                 Ok(()) => out.say(format!(
                     "recorded {} as air_server {v} in {} (air_server prints no version, so `spi versions` reads this)",
@@ -248,7 +252,8 @@ fn write_service_files(
     folder: &Path,
     ops: Option<&Path>,
 ) -> Result<Vec<String>, String> {
-    let plan = service::plan(spi, ops)?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find the spi binary: {e}"))?;
+    let plan = service::plan(spi, ops, &exe)?;
     for (name, text) in &plan.files {
         write_text(&folder.join(name), text)?;
     }
@@ -642,10 +647,13 @@ pub struct UpgradeArgs<'a> {
     pub wait_secs: u64,
 }
 
+/// How many `spi.toml.<epoch>.bak` files a pin reset keeps.
+const CONFIG_BACKUPS: usize = 5;
+
 /// What the upgrade commands work with besides the settings.
 pub struct Around<'a> {
     pub exec: &'a dyn Exec,
-    pub source: &'a dyn release::Source,
+    pub source: &'a dyn release::Source<Program>,
     pub prompts: &'a Prompts<'a>,
     /// What a program's `/health` answers.
     pub probe: &'a dyn Fn(Program) -> upgrade::Probe,
@@ -795,7 +803,7 @@ pub fn upgrade(spi: &Spi, args: &UpgradeArgs, around: &Around) -> Outcome {
             ));
         }
     }
-    let effective = release::unpinned(spi, &reset);
+    let effective = unpinned(spi, &reset);
 
     // What it would do.
     let mut ask = vec![UPGRADE_WARNING.to_string()];
@@ -888,7 +896,12 @@ fn run_upgrade(
     out: &mut Outcome,
 ) {
     if !reset.is_empty() {
-        match release::reset_pins(around.config, reset, around.now.timestamp().as_second()) {
+        match release::reset_pins(
+            around.config,
+            reset,
+            around.now.timestamp().as_second(),
+            CONFIG_BACKUPS,
+        ) {
             Ok(lines) => lines.into_iter().for_each(|l| out.say(l)),
             Err(e) => {
                 out.fail(format!("{e}: nothing was changed"));
@@ -956,7 +969,7 @@ pub fn run_scheduled(spi: &Spi, wait_secs: u64, around: &Around) -> Outcome {
                 Ok(programs) => {
                     let reset: Vec<Program> =
                         p.reset.iter().filter_map(|n| Program::parse(n)).collect();
-                    let effective = release::unpinned(spi, &reset);
+                    let effective = unpinned(spi, &reset);
                     run_upgrade(&effective, &programs, &reset, wait_secs, around, &mut out);
                 }
             }
@@ -972,7 +985,35 @@ pub struct Checked {
     pub warning: Vec<String>,
 }
 
-pub fn upgrade_check(spi: &Spi, exec: &dyn Exec, source: &dyn release::Source) -> Checked {
+/// One line of `spi upgrade check --json`: the pin is `spi_toml` there.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CheckLine {
+    pub name: String,
+    pub installed: String,
+    pub spi_toml: String,
+    pub newest: String,
+    pub status: String,
+    pub detail: String,
+}
+
+impl Checked {
+    /// The lines as `--json` prints them.
+    pub fn json(&self) -> Vec<CheckLine> {
+        self.lines
+            .iter()
+            .map(|l| CheckLine {
+                name: l.name.clone(),
+                installed: l.installed.clone(),
+                spi_toml: l.pin.clone(),
+                newest: l.newest.clone(),
+                status: l.status.clone(),
+                detail: l.detail.clone(),
+            })
+            .collect()
+    }
+}
+
+pub fn upgrade_check(spi: &Spi, exec: &dyn Exec, source: &dyn release::Source<Program>) -> Checked {
     Checked {
         lines: release::check(spi, exec, source),
         warning: release::pin_warning(&release::pinned(spi, source, &Program::ALL)),

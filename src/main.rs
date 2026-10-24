@@ -8,6 +8,7 @@ use spi::commands::{self, InstallOptions, PinPolicy, ServiceFiles, UpgradeArgs, 
 use spi::config::{Inputs, Spi};
 use spi::exec::System;
 use spi::fetch::{self, CurlSource};
+use spi::logs;
 use spi::release;
 use spi::{audit, run, schedule, setup, version, versions};
 
@@ -74,6 +75,13 @@ spi [--dir DIR] [--config FILE] [--network NAME] <command>
                   release, and whether it is up to date. Changes nothing.
   upgrade status  The pending scheduled upgrade, or that none is.
   upgrade cancel  Cancel the pending scheduled upgrade.
+  logs rotate [--running] [--max-mb N] [--keep N] FILE...
+                  Keep logs under a size cap: a FILE bigger than N MB (50) is moved
+                  aside as FILE.<epoch>.bak and only the newest N (4) .bak files stay.
+                  With --running the file is held open by a running program, so it
+                  is copied aside and emptied in place. The service files call it
+                  (before each start, and every few minutes while the services run);
+                  it needs no spi.toml.
   config show     The settings in use and where each came from.
   audit [--json]  What the PSP and ESP mints owe: PSP outstanding, ESP matured
                   and unmatured, each in its unit, in PSP and in USD, the PSP paid to
@@ -98,6 +106,7 @@ fn check_args(command: &str, rest: &[String]) -> Result<(), String> {
         "upgrade" => return check_upgrade_args(rest),
         "restart" => return check_restart_args(rest),
         "snapshot" | "publish-balance" => (&[], &[]),
+        "logs" => return parse_logs(rest).map(|_| ()),
         "config" => {
             return match rest {
                 [word] if word == "show" => Ok(()),
@@ -129,6 +138,92 @@ fn check_args(command: &str, rest: &[String]) -> Result<(), String> {
         return Err("--service-files and --no-service-files cannot be given together".into());
     }
     Ok(())
+}
+
+/// What `spi logs rotate` was asked.
+struct LogsArgs {
+    running: bool,
+    max_mb: u64,
+    keep: u64,
+    files: Vec<String>,
+}
+
+/// The arguments of `spi logs`: `rotate [--running] [--max-mb N] [--keep N] FILE...`.
+fn parse_logs(rest: &[String]) -> Result<LogsArgs, String> {
+    let Some((word, args)) = rest.split_first() else {
+        return Err("usage: spi logs rotate [--running] [--max-mb N] [--keep N] FILE...".into());
+    };
+    if word != "rotate" {
+        return Err(format!(
+            "`spi logs` takes `rotate`, not `{word}`. Run with --help"
+        ));
+    }
+    let mut out = LogsArgs {
+        running: false,
+        max_mb: logs::DEFAULT_MAX_MB,
+        keep: logs::DEFAULT_KEEP,
+        files: Vec::new(),
+    };
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--running" => out.running = true,
+            flag @ ("--max-mb" | "--keep") => {
+                let value = args.next().ok_or_else(|| format!("{flag} needs a value"))?;
+                let n = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("{flag} is `{value}`: it must be a whole number"))?;
+                if flag == "--max-mb" {
+                    out.max_mb = n;
+                } else {
+                    out.keep = n;
+                }
+            }
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "`{other}` is not an argument of `spi logs rotate`. Run with --help"
+                ));
+            }
+            file => out.files.push(file.to_string()),
+        }
+    }
+    if out.files.is_empty() {
+        return Err("`spi logs rotate` needs at least one log file".into());
+    }
+    Ok(out)
+}
+
+/// `spi logs rotate`: needs no `spi.toml` and no `HOME`, because a service
+/// manager runs it with neither.
+fn logs_rotate(args: &LogsArgs) -> bool {
+    let mut ok = true;
+    let now = logs::now_secs();
+    for file in &args.files {
+        let path = std::path::Path::new(file);
+        let rotated = if args.running {
+            logs::rotate_running(path, args.max_mb, args.keep, now)
+        } else {
+            logs::rotate(path, args.max_mb, args.keep, now)
+        };
+        match rotated {
+            Ok(Some(moved)) if args.running => println!(
+                "{file} is over {} MB: copied to {} and emptied",
+                args.max_mb,
+                moved.display()
+            ),
+            Ok(Some(moved)) => println!(
+                "{file} is over {} MB: moved to {}",
+                args.max_mb,
+                moved.display()
+            ),
+            Ok(None) => {}
+            Err(e) => {
+                println!("FAIL: {e}");
+                ok = false;
+            }
+        }
+    }
+    ok
 }
 
 /// The arguments of `spi upgrade`: a subcommand (`check`, `status`, `cancel`,
@@ -244,6 +339,9 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
         return Ok(true);
     }
     check_args(&args[0], &args[1..])?;
+    if args[0] == "logs" {
+        return Ok(logs_rotate(&parse_logs(&args[1..])?));
+    }
     let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
     let env = move |name: &str| -> Option<String> {
         if name == "SPI_NETWORK"
@@ -383,11 +481,11 @@ fn real_main(args: Vec<String>) -> Result<bool, String> {
                     if json {
                         println!(
                             "{}",
-                            serde_json::to_string_pretty(&checked.lines)
+                            serde_json::to_string_pretty(&checked.json())
                                 .map_err(|e| e.to_string())?
                         );
                     } else {
-                        print!("{}", release::render(&checked.lines));
+                        print!("{}", release::render(&checked.lines, "spi.toml", 10));
                         checked.warning.iter().for_each(|l| println!("{l}"));
                     }
                     Ok(true)

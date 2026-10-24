@@ -16,7 +16,13 @@
 //! the data and log folders, the bitcoind datadir and arguments, ...). An
 //! unknown or unclosed placeholder is an error that names it, never text left
 //! in a unit. In a property list the values are XML-escaped; the keys that end
-//! in `_xml` are inserted as they are.
+//! in `_xml` are inserted as they are. (The expander is air-interface's
+//! `template`, shared with aso.)
+//!
+//! **On Linux every log is held to a size cap.** Each unit runs `spi logs rotate`
+//! before its program, and the logs job (`sp-logs.service`, run by
+//! `sp-logs.timer`) rotates every log in place while the services run; see
+//! DESIGN.md, "Service files". macOS is a development machine: no log job.
 //!
 //! **`--ops DIR` replaces a template and is not required.** A file in `DIR`
 //! under the name `spi` writes (`systemd/psp-mint.service`,
@@ -42,6 +48,11 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use air_interface::air;
+use air_interface::files::find_binary;
+use air_interface::schedule;
+use air_interface::template::{expand, plain, protect_home, under_home, xml_escape};
+
 use crate::config::{Spi, Which};
 use crate::{generate, run};
 
@@ -50,16 +61,26 @@ const HEALTH_SERVICE: &str = include_str!("../ops/systemd/health.service");
 const BITCOIND_SERVICE: &str = include_str!("../ops/systemd/bitcoind.service");
 const AIR_SERVICE: &str = include_str!("../ops/systemd/air.service");
 const AIR_PLIST: &str = include_str!("../ops/launchd/air.plist");
-const NGINX_AIR: &str = include_str!("../ops/nginx-air.conf");
+const NGINX_HEADER: &str = include_str!("../ops/nginx-air.header");
 const MINT_PLIST: &str = include_str!("../ops/launchd/mint.plist");
 const HEALTH_PLIST: &str = include_str!("../ops/launchd/health.plist");
 const BITCOIND_PLIST: &str = include_str!("../ops/launchd/bitcoind.plist");
 const HEALTH_CONF: &str = include_str!("../ops/health.conf");
+const LOGS_SERVICE: &str = include_str!("../ops/systemd/logs.service");
+const LOGS_TIMER: &str = include_str!("../ops/systemd/logs.timer");
 const SCRIPT_LINUX: &str = include_str!("../ops/install-system.linux.sh");
 const SCRIPT_MAC: &str = include_str!("../ops/install-system.mac.sh");
 
 /// The health monitor, as installed.
 pub const HEALTH_MONITOR: &str = include_str!("../ops/sp-health-monitor.sh");
+
+/// How often the logs job checks the logs of the running services. A log can
+/// pass `[service] log_max_size_mb` by what is written in this time.
+pub const LOGS_EVERY_MINUTES: u64 = 5;
+
+/// The logs job's unit name (Linux: `sp-logs.service` and `sp-logs.timer`) and
+/// its launchd label.
+pub const LOGS_UNIT: &str = "sp-logs";
 
 /// The name of the script that puts the files in place.
 pub const SCRIPT: &str = "install-system.sh";
@@ -81,38 +102,6 @@ pub struct Plan {
     pub unit_dir: &'static str,
 }
 
-/// Whether a path is in a home folder, where a service can not go unless
-/// `ProtectHome` is relaxed.
-pub fn under_home(path: &str) -> bool {
-    path == "/root"
-        || ["/home/", "/root/", "/Users/"]
-            .iter()
-            .any(|p| path.starts_with(p))
-}
-
-fn protect_home(paths: &[&str]) -> &'static str {
-    if paths.iter().any(|p| under_home(p)) {
-        "read-only"
-    } else {
-        "yes"
-    }
-}
-
-/// A value that may go into a unit, a property list and the script as it is.
-pub fn plain(what: &str, value: &str) -> Result<(), String> {
-    let ok = !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._+@:=,-".contains(c));
-    if ok {
-        Ok(())
-    } else {
-        Err(format!(
-            "{what} is `{value}`: in a service file it may hold only letters, digits and / . _ + @ : = , - (no spaces, quotes, % or $). Use a path without them"
-        ))
-    }
-}
-
 /// `value` as one word for sh: as it is when it is plain, else in single quotes.
 pub fn sh_word(value: &str) -> String {
     let plain = !value.is_empty()
@@ -124,70 +113,6 @@ pub fn sh_word(value: &str) -> String {
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
-}
-
-fn xml_escape(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// `template` with each `{{key}}` replaced by its value in `vars`. With `xml`
-/// the values are escaped, except those of keys that end in `_xml`.
-pub fn expand(
-    what: &str,
-    template: &str,
-    vars: &[(&str, String)],
-    xml: bool,
-) -> Result<String, String> {
-    let mut out = String::with_capacity(template.len() + 256);
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let Some(end) = after.find("}}") else {
-            return Err(format!("{what}: a `{{{{` is never closed with `}}}}`"));
-        };
-        let key = after[..end].trim();
-        let Some((_, value)) = vars.iter().find(|(k, _)| *k == key) else {
-            let known: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
-            return Err(format!(
-                "{what}: unknown placeholder {{{{{key}}}}} (known here: {})",
-                known.join(", ")
-            ));
-        };
-        if xml && !key.ends_with("_xml") {
-            out.push_str(&xml_escape(value));
-        } else {
-            out.push_str(value);
-        }
-        rest = &after[end + 2..];
-    }
-    out.push_str(rest);
-    Ok(out)
-}
-
-/// The binary `spec` names (a path, or a name on PATH), as an absolute path.
-pub fn find_binary(spec: &str) -> Option<PathBuf> {
-    let found = if spec.contains('/') {
-        let p = PathBuf::from(spec);
-        p.is_file().then_some(p)
-    } else {
-        let path = std::env::var_os("PATH")?;
-        std::env::split_paths(&path)
-            .map(|d| d.join(spec))
-            .find(|p| p.is_file())
-    };
-    found.and_then(|p| fs::canonicalize(p).ok())
 }
 
 /// Where bitcoind keeps its data when it runs as a service.
@@ -217,7 +142,7 @@ pub fn bitcoind_args(spi: &Spi) -> Result<Vec<String>, String> {
     // it can run `spi install` and `spi status` against this node.
     args.push("-rpccookieperms=group".to_string());
     // The whole log goes to the console (the unit's `bitcoind.log`), which the
-    // logrotate limits cover; bitcoind trims `debug.log` only when it starts.
+    // log cap covers; bitcoind trims `debug.log` only when it starts.
     args.push("-nodebuglogfile".to_string());
     args.push("-printtoconsole".to_string());
     if let Some(port) = url_port(&spi.rpc_url)
@@ -344,15 +269,6 @@ fn secret_file(spi: &Spi, which: Which) -> String {
     text
 }
 
-fn logrotate(spi: &Spi) -> String {
-    let svc = &spi.service;
-    format!(
-        "# Written by `spi install` from [service] log_keep and log_max_size_mb. copytruncate is needed because the mints keep the file open.\n\
-         {}/*.log {{\n    weekly\n    maxsize {}M\n    rotate {}\n    compress\n    missingok\n    copytruncate\n}}\n",
-        svc.log_dir, svc.log_max_size_mb, svc.log_keep
-    )
-}
-
 /// A template from `ops` under `rel` if there is one, else the embedded text.
 fn template(embedded: &str, ops: Option<&Path>, rel: &str) -> Result<String, String> {
     let Some(dir) = ops else {
@@ -378,6 +294,16 @@ fn common_vars(spi: &Spi, protect: &str) -> Vec<(&'static str, String)> {
         ("log_dir", svc.log_dir.clone()),
         ("network", spi.network.name().to_string()),
         ("protect_home", protect.to_string()),
+        ("spi_bin", format!("{}/spi", svc.bin_dir)),
+        ("log_max_mb", svc.log_max_size_mb.to_string()),
+        ("log_keep", svc.log_keep.to_string()),
+        (
+            "rotate_cmd",
+            format!(
+                "{}/spi logs rotate --max-mb {} --keep {}",
+                svc.bin_dir, svc.log_max_size_mb, svc.log_keep
+            ),
+        ),
     ]
 }
 
@@ -463,8 +389,52 @@ fn health_entry(
     Ok(())
 }
 
+/// The logs job's files (Linux only: a service and a timer). `logs` are the
+/// files it keeps under the cap.
+fn logs_entry(
+    spi: &Spi,
+    ops: Option<&Path>,
+    logs: &[String],
+    files: &mut Vec<(String, String)>,
+    installs: &mut Vec<String>,
+) -> Result<(), String> {
+    let svc = &spi.service;
+    for l in logs {
+        plain("a log file", l)?;
+    }
+    let mut vars = common_vars(spi, protect_home(&[svc.log_dir.as_str()]));
+    vars.push(("minutes", LOGS_EVERY_MINUTES.to_string()));
+    // `plain` paths are single shell words as they are.
+    vars.push(("logs", logs.join(" ")));
+    let parts = [
+        (
+            format!("{LOGS_UNIT}.service"),
+            LOGS_SERVICE,
+            "the logs unit",
+        ),
+        (format!("{LOGS_UNIT}.timer"), LOGS_TIMER, "the logs timer"),
+    ];
+    installs.push("# The job that keeps the service logs under their size cap.".into());
+    for (file, embedded, what) in parts {
+        let text = template(embedded, ops, &format!("systemd/{file}"))?;
+        files.push((
+            file.clone(),
+            expand(&format!("{what} {file}"), &text, &vars, false)?,
+        ));
+        installs.push(install_line(
+            "put",
+            "0644",
+            "root",
+            "root",
+            &format!("\"$here/{file}\""),
+            &format!("\"$unit_dir/{file}\""),
+        ));
+    }
+    Ok(())
+}
+
 /// Every file for the service: see the module documentation.
-pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
+pub fn plan(spi: &Spi, ops: Option<&Path>, exe: &Path) -> Result<Plan, String> {
     if let Some(dir) = ops
         && !dir.is_dir()
     {
@@ -527,10 +497,15 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
     let mut start_units: Vec<String> = Vec::new();
 
     // The binaries.
+    let exe_text = exe.display().to_string();
     let mut binaries = vec![
         ("psp-mint", spi.psp.bin.as_str()),
         ("esp-mint", spi.esp.bin.as_str()),
     ];
+    if !mac {
+        // The Linux units run `spi logs rotate`, so a copy of spi goes beside them.
+        binaries.push(("spi", exe_text.as_str()));
+    }
     if manage {
         binaries.push(("bitcoind", spi.bitcoind_bin.as_str()));
     }
@@ -812,7 +787,12 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
             ];
             files.push((
                 "nginx-air-server.conf".into(),
-                expand("the nginx file", NGINX_AIR, &vars, false)?,
+                expand(
+                    "the nginx file",
+                    &air::nginx_template(NGINX_HEADER),
+                    &vars,
+                    false,
+                )?,
             ));
             notes.push(
                 "nginx-air-server.conf is for nginx: spi does not install it. Put it where your nginx reads its sites, check it with `nginx -t` and reload nginx".into(),
@@ -857,8 +837,28 @@ pub fn plan(spi: &Spi, ops: Option<&Path>) -> Result<Plan, String> {
     }
     start_units.extend(start_lines(&mint_units));
 
+    // The logs job: the logs of the running services are kept under the cap.
+    let mut logs: Vec<String> = Vec::new();
+    let log = |name: &str| format!("{}/{name}.log", svc.log_dir);
+    logs.push(log("psp-mint"));
+    logs.push(log("esp-mint"));
+    if spi.air.manage {
+        logs.push(log("air_server"));
+    }
+    if manage {
+        logs.push(log("bitcoind"));
+    }
+    if svc.health {
+        logs.push(log("psp-mint-health"));
+        logs.push(log("esp-mint-health"));
+        if spi.air.manage {
+            logs.push(log(&format!("{air_base}-health")));
+        }
+    }
+    logs.push(schedule::log_file(spi).display().to_string());
     if !mac {
-        files.push(("logrotate-sp-mint".into(), logrotate(spi)));
+        logs_entry(spi, ops, &logs, &mut files, &mut installs)?;
+        start_units.push(format!("sudo systemctl enable --now {LOGS_UNIT}.timer"));
     }
 
     // The script.
@@ -912,66 +912,11 @@ mod tests {
     use super::*;
     use crate::config::Network;
 
-    fn vars() -> Vec<(&'static str, String)> {
-        vec![("a", "1 & 2".into()), ("b_xml", "<x/>".into())]
-    }
-
-    #[test]
-    fn placeholders_are_replaced_and_text_around_them_is_left_alone() {
-        let out = expand("t", "x {{a}} y {{ a }} ${z} {not}", &vars(), false).unwrap();
-        assert_eq!(out, "x 1 & 2 y 1 & 2 ${z} {not}");
-    }
-
-    #[test]
-    fn xml_values_are_escaped_except_the_ones_that_say_they_are_xml() {
-        let out = expand("t", "<s>{{a}}</s>{{b_xml}}", &vars(), true).unwrap();
-        assert_eq!(out, "<s>1 &amp; 2</s><x/>");
-    }
-
-    #[test]
-    fn an_unknown_or_unclosed_placeholder_is_an_error_that_names_it() {
-        let e = expand("the unit", "{{nope}}", &vars(), false).unwrap_err();
-        assert!(e.contains("the unit") && e.contains("{{nope}}") && e.contains("a, b_xml"));
-        let e = expand("the unit", "x {{a", &vars(), false).unwrap_err();
-        assert!(e.contains("never closed"));
-    }
-
-    #[test]
-    fn only_plain_values_go_into_a_unit() {
-        assert!(plain("p", "/usr/local/bin").is_ok());
-        assert!(plain("p", "-datadir=/var/lib/x_y-1.2").is_ok());
-        for bad in [
-            "", "/a b", "/a'b", "/a\"b", "/a%b", "/a$b", "/a\\b", "/a\nb", "/a;b",
-        ] {
-            let e = plain("p", bad).unwrap_err();
-            assert!(
-                e.starts_with(&format!("p is `{bad}`: in a service file it may hold only")),
-                "{bad:?}: {e}"
-            );
-        }
-    }
-
     #[test]
     fn a_word_for_sh_is_quoted_only_when_it_has_to_be() {
         assert_eq!(sh_word("/usr/local/bin/x"), "/usr/local/bin/x");
         assert_eq!(sh_word("/a b"), "'/a b'");
         assert_eq!(sh_word("/a'b"), "'/a'\\''b'");
-    }
-
-    #[test]
-    fn home_folders_are_found() {
-        for p in [
-            "/home/x",
-            "/home/x/y",
-            "/root",
-            "/root/x",
-            "/Users/x/Library",
-        ] {
-            assert!(under_home(p), "{p}");
-        }
-        for p in ["/var/lib/sp-mint", "/homework", "/usr/local/bin", "/Users"] {
-            assert!(!under_home(p), "{p}");
-        }
     }
 
     #[test]

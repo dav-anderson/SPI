@@ -11,8 +11,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use air_interface::Managed;
+use air_interface::files::sha256_file;
+use air_interface::release::{Download, Source};
 use spi::config::{Inputs, Spi};
 use spi::exec::{Exec, Ran};
+
+/// The binary `spi install` puts beside the services (the one that runs): the
+/// test binary stands in for it.
+pub fn exe() -> PathBuf {
+    std::env::current_exe().unwrap()
+}
 
 /// A request as the stub saw it.
 #[derive(Clone, Debug)]
@@ -180,12 +189,11 @@ pub fn wallet_holding(psp: u64, esp: u64) -> Fake {
 
 /// A release source that serves from memory: the tags each program has, and
 /// the file text of each build it can fetch. `fetch` writes the build into the
-/// folder it is given and says the SHA-256 of what it wrote, unless the build
-/// was given another one to publish (a corrupt download).
+/// folder it is given and says the SHA-256 of what it wrote.
 pub struct FakeSource {
     pub tags: Vec<(spi::upgrade::Program, Result<Vec<String>, String>)>,
-    /// (program, version, the file's text, a SHA-256 to publish instead).
-    pub builds: Vec<(spi::upgrade::Program, String, String, Option<String>)>,
+    /// (program, version, the file's text).
+    pub builds: Vec<(spi::upgrade::Program, String, String)>,
     /// `"<program> <version>"` for each fetch asked for, in order.
     pub fetched: Mutex<Vec<String>>,
 }
@@ -211,29 +219,12 @@ impl FakeSource {
     }
 
     pub fn build(mut self, p: spi::upgrade::Program, version: &str, text: &str) -> FakeSource {
-        self.builds
-            .push((p, version.to_string(), text.to_string(), None));
-        self
-    }
-
-    pub fn corrupt_build(
-        mut self,
-        p: spi::upgrade::Program,
-        version: &str,
-        text: &str,
-        published_sha: &str,
-    ) -> FakeSource {
-        self.builds.push((
-            p,
-            version.to_string(),
-            text.to_string(),
-            Some(published_sha.to_string()),
-        ));
+        self.builds.push((p, version.to_string(), text.to_string()));
         self
     }
 }
 
-impl spi::release::Source for FakeSource {
+impl Source<spi::upgrade::Program> for FakeSource {
     fn tags(&self, program: spi::upgrade::Program) -> Result<Vec<String>, String> {
         self.tags
             .iter()
@@ -247,24 +238,21 @@ impl spi::release::Source for FakeSource {
         program: spi::upgrade::Program,
         version: &str,
         dir: &std::path::Path,
-    ) -> Result<spi::release::Download, String> {
+    ) -> Result<Download, String> {
         self.fetched
             .lock()
             .unwrap()
             .push(format!("{} {version}", program.name()));
-        let (_, _, text, sha) = self
+        let (_, _, text) = self
             .builds
             .iter()
-            .find(|(p, v, _, _)| *p == program && v == version)
+            .find(|(p, v, _)| *p == program && v == version)
             .ok_or_else(|| format!("no release binary of {} {version}", program.name()))?;
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let file = dir.join(program.name());
         std::fs::write(&file, text).map_err(|e| e.to_string())?;
-        let sha256 = match sha {
-            Some(s) => s.clone(),
-            None => spi::versions::sha256_file(&file)?,
-        };
-        Ok(spi::release::Download { file, sha256 })
+        let sha256 = sha256_file(&file)?;
+        Ok(Download { file, sha256 })
     }
 }
 
@@ -288,7 +276,7 @@ pub fn tarball(path: &str, text: &str) -> Vec<u8> {
 pub fn sha(bytes: &[u8]) -> String {
     let file = scratch("sha").join("f");
     std::fs::write(&file, bytes).unwrap();
-    spi::versions::sha256_file(&file).unwrap()
+    sha256_file(&file).unwrap()
 }
 
 pub const LINUX_ARCHIVE: &str = "psp-mint-0.6.0-linux-x86_64.tar.gz";
