@@ -3,9 +3,9 @@
 version = 4
 
 [[package]]
-name = "air-interface"
-version = "0.1.0"
-source = "git+https://github.com/dav-anderson/air-interface.git?tag=v0.1.0#c8330e1bae7af8007a97d994b8745a1c9f62d3f2"
+name = "air-minterface"
+version = "0.2.0"
+source = "git+https://github.com/dav-anderson/air-minterface.git?tag=v0.2.0#c18a691feab7d8d42fc7735f775d613981114ef8"
 dependencies = [
  "jiff",
  "serde",
@@ -1130,9 +1130,9 @@ dependencies = [
 
 [[package]]
 name = "spi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
- "air-interface",
+ "air-minterface",
  "jiff",
  "reqwest",
  "serde",
