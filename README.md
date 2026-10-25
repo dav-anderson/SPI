@@ -1,6 +1,6 @@
 # spi
 
-One config and one command line over `psp-mint`, `esp-mint` and `bitcoind`, and over the two programs the SPI needs beside them: the AIR server (`air_server`, the stock one) that the mints and the wallets reach each other through, and the SPI's own `ecash-wallet`. It does not link the mints or change them: it writes their config files, the AIR server's settings, the wallet's config and the files that run them as services, starts the binaries, and reads their `GET /health` and `GET /audit`. It never manages fsp-mint: an FSP mint is run through the operator control interface of the AIR service it belongs to. Version 0.2.1. Why it is built this way is in [DESIGN.md](DESIGN.md).
+One config and one command line over `psp-mint`, `esp-mint` and `bitcoind`, and over the two programs the SPI needs beside them: the AIR server (`air_server`, the stock one) that the mints and the wallets reach each other through, and the SPI's own `ecash-wallet`. It does not link the mints or change them: it writes their config files, the AIR server's settings, the wallet's config and the files that run them as services, starts the binaries, and reads their `GET /health` and `GET /audit`. It never manages fsp-mint: an FSP mint is run through the operator control interface of the AIR service it belongs to. Version 0.2.2. Why it is built this way is in [DESIGN.md](DESIGN.md).
 
 **spi is designed to run on a Linux system** (systemd). macOS is supported only as a development machine: the commands and the service files for it exist so that spi can be tried and tested on a Mac, and it is not meant to run a production SPI. (The code spi shares with `aso`, the part that downloads and upgrades programs, schedules an upgrade and keeps logs under a cap, is the [air-minterface](https://github.com/dav-anderson/air-minterface) crate.)
 
@@ -14,7 +14,7 @@ A machine needs six programs: `spi`, `psp-mint`, `esp-mint`, `bitcoind`, `air_se
 cargo install --git https://github.com/dav-anderson/psp-mint.git --tag v0.5.0
 cargo install --git https://github.com/dav-anderson/esp-mint.git --tag v0.7.0
 cargo install --git https://github.com/dav-anderson/ecash-wallet.git --tag v0.6.0
-cargo install --git https://github.com/dav-anderson/SPI.git --tag v0.2.1
+cargo install --git https://github.com/dav-anderson/SPI.git --tag v0.2.2
 ```
 
 Those are the newest tags that exist today, and **none of them has the work this README describes**: the AIR server, the SPI's wallet, the reload, the snapshot, the burn rule and `spi upgrade` came after them. Until the next tag of each repository is cut, build from a checkout of the branch that has them (`git clone https://github.com/dav-anderson/<repo>.git`, then `cargo install --path .` in it, for `SPI`, `psp-mint`, `esp-mint` and `ecash-wallet`); the release notes of each repository (`CHANGELOG.md`) say which tag has what. Each puts its binary in `~/.cargo/bin`. **esp-mint 0.5.0 is the first release that gives `spi audit` the matured / unmatured split**; an older one still works and `audit` says it has no split.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 (2026-10-25)
+
+`spi audit` already read the mints' `/audit` figures as a JSON number or a decimal string (`audit::whole`), so it reads psp-mint 0.7.0 and esp-mint 0.9.0, which give `issued`, `redeemed` and `outstanding` as strings, with no change to the code. One test (`audit_reads_string_totals_past_u64`) pins it past `u64::MAX` for psp-mint's `outstanding` and esp-mint's `outstanding`, `outstanding_matured` and `outstanding_unmatured`, while `reissued` stays a number. The version is the only other change. No wire change.
+
 ## 0.2.1 (2026-10-24)
 
 The shared crate is renamed air-minterface (it was air-interface): spi now

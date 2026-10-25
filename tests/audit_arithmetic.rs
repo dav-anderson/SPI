@@ -132,6 +132,28 @@ fn a_split_that_does_not_add_up_or_is_half_there_is_refused() {
 }
 
 #[test]
+fn audit_reads_string_totals_past_u64() {
+    // psp-mint 0.7.0 and esp-mint 0.9.0 give the totals as decimal strings;
+    // `paid`, `burned` and `reissued` stay numbers. Fails if `audit::whole`
+    // stops taking strings or u128.
+    let psp =
+        json!({"outstanding": "18446744073709551616", "paid": 40, "burned": 10, "reissued": 30});
+    let esp = json!({
+        "outstanding": "36893488147419103232",
+        "outstanding_matured": "18446744073709551617",
+        "outstanding_unmatured": "18446744073709551615",
+    });
+    let f = audit::figures(&psp, &esp).unwrap();
+    assert_eq!((f.psp, f.esp_total), (1 << 64, 1 << 65));
+    assert_eq!(
+        (f.esp_matured, f.esp_unmatured),
+        (Some((1 << 64) + 1), Some((1 << 64) - 1))
+    );
+    let r = audit::revenue(&psp).unwrap().unwrap();
+    assert_eq!(r.reissued.as_deref(), Some("30"));
+}
+
+#[test]
 fn the_split_prints_its_zero_lines_with_no_warning() {
     let psp = json!({"outstanding": 0});
     let esp = json!({
