@@ -673,9 +673,18 @@ fn setup_lists_the_steps_and_the_spi_is_ready_only_when_the_wallet_holds_psp() {
         dir.join("wallet/wallet.json").display(),
         dir.join("generated/ecash-wallet.toml").display()
     );
-    assert!(said.contains(&format!("{w} buy-psp --mint-key")), "{said}");
-    assert!(said.contains("--sync AMOUNT"), "{said}");
-    assert!(said.contains(&format!("{w} claim-psp")), "{said}");
+    let psp_did = "<the PSP's DID: set [psp] did in spi.toml>";
+    for line in [
+        format!("    1. {w} buy-psp --mint-key {psp_did}"),
+        "    2. Pay the printed payload once, as the OP_RETURN of a Bitcoin payment to the PSP mint's wallet (ecash-wallet's README shows how).".to_string(),
+        format!("    3. {w} claim-psp   (after the payment has its confirmations)"),
+    ] {
+        assert!(said.lines().any(|l| l == line), "{line}\n{said}");
+    }
+    // The old flow's words are gone.
+    for gone in ["--sync", "AMOUNT", "min_purchase", "Never pay it twice"] {
+        assert!(!said.contains(gone), "{gone}: {said}");
+    }
     assert!(
         said.contains(&format!(
             "{w} handoff import STRING-OR-FILE --did-key-file FILE"
@@ -715,13 +724,22 @@ fn setup_warns_about_a_fee_that_the_genesis_purchase_would_pay_to_the_spi_itself
     let mut spi = config(&dir, &btc, &psp, &esp);
     let none = commands::fee_notes(&spi);
     assert!(none.is_empty(), "{none:?}");
-    spi.psp.settings = "[reconciliation]\nfee = 3\nwrite_fee = 0\n[delivery]\nread_fee = 1\n"
+    // A fee of 0 is no note; the removed reconciliation fees are not looked at.
+    spi.psp.settings = "[reconciliation]\nfee = 3\nwrite_fee = 4\n[claim]\nwrite_fee = 0\n"
+        .parse()
+        .unwrap();
+    assert!(commands::fee_notes(&spi).is_empty());
+    spi.psp.settings = "[claim]\nwrite_fee = 3\n[delivery]\nread_fee = 1\n"
         .parse()
         .unwrap();
     let notes = commands::fee_notes(&spi);
-    assert_eq!(notes.len(), 2, "{notes:?}");
-    assert!(notes[0].starts_with("NOTE: psp.settings.reconciliation.fee is 3. "));
-    assert!(notes[1].starts_with("NOTE: psp.settings.delivery.read_fee is 1. "));
+    assert_eq!(
+        notes,
+        [
+            "NOTE: psp.settings.claim.write_fee is 3. The genesis purchase should run with every fee off: set it to 0, run `spi reload`, buy, then set it back",
+            "NOTE: psp.settings.delivery.read_fee is 1. The genesis purchase should run with every fee off: set it to 0, run `spi reload`, buy, then set it back"
+        ]
+    );
     let out = commands::setup(&spi, &wallet_holding(0, 0));
     assert!(out.lines.iter().any(|l| l == &notes[0]), "{:?}", out.lines);
 }

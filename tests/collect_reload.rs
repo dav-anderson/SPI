@@ -222,7 +222,7 @@ fn write_pid(spi: &Spi, which: Which, pid: u32) {
 #[test]
 fn reload_writes_the_configs_and_sends_sighup_to_the_mint_spi_started_and_stops_nothing_else() {
     let dir = scratch("reload");
-    let spi = load(&dir, Some("[psp]\nreconciliation_window_days = 21\n")).unwrap();
+    let spi = load(&dir, Some("[psp.settings.settle]\nretention_days = 120\n")).unwrap();
     let mut psp = stand_in();
     let pid = psp.id();
     write_pid(&spi, Which::Psp, pid);
@@ -244,7 +244,7 @@ fn reload_writes_the_configs_and_sends_sighup_to_the_mint_spi_started_and_stops_
     );
     // The file the mint reads again has the new value.
     let file = std::fs::read_to_string(spi.generated_config(Which::Psp)).unwrap();
-    assert!(file.contains("reconciliation_window_days = 21"), "{file}");
+    assert!(file.contains("retention_days = 120"), "{file}");
 }
 
 #[test]
@@ -379,7 +379,7 @@ const DOWNTIME: &str = "BRIEF DOWNTIME: restart. One process holds the mint's da
 #[test]
 fn the_first_reload_has_nothing_to_compare_and_names_no_setting() {
     let dir = scratch("reload-first");
-    let lines = reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 48\n");
+    let lines = reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 1440\n");
     assert_eq!(
         lines,
         [
@@ -393,15 +393,15 @@ fn the_first_reload_has_nothing_to_compare_and_names_no_setting() {
 #[test]
 fn a_setting_that_needs_a_restart_is_named_and_nothing_is_restarted() {
     let dir = scratch("reload-restart-one");
-    reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 24\n");
-    let lines = reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 48\n");
+    reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 720\n");
+    let lines = reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 1440\n");
     assert_eq!(
         lines,
         [
             "wrote the config files again".to_string(),
             NOT_STARTED_PSP.to_string(),
             "psp-mint: 1 setting changed that needs a restart (a brief downtime), so the running mint keeps the old value until it is restarted; this reload restarts nothing:".to_string(),
-            "  rotation.period_hours: 24 -> 48".to_string(),
+            "  rotation.period_hours: 720 -> 1440".to_string(),
             format!(
                 "psp-mint: to apply it, run `spi restart psp-mint` (a mint started with `spi start`: `spi stop`, then `spi start`). {DOWNTIME}"
             ),
@@ -416,7 +416,7 @@ fn several_settings_and_both_mints_are_each_named_under_their_own_mint() {
     reload_with(&dir, "");
     let lines = reload_with(
         &dir,
-        "[psp.settings.rotation]\nperiod_hours = 48\nactivation_hours = 2\n[esp.settings.admin]\nmax_request_bytes = 4096\n",
+        "[psp.settings.rotation]\nperiod_hours = 1440\nactivation_hours = 2\n[esp.settings.admin]\nmax_request_bytes = 4096\n",
     );
     assert_eq!(
         lines,
@@ -425,7 +425,7 @@ fn several_settings_and_both_mints_are_each_named_under_their_own_mint() {
             NOT_STARTED_PSP.to_string(),
             "psp-mint: 2 settings changed that need a restart (a brief downtime), so the running mint keeps the old values until it is restarted; this reload restarts nothing:".to_string(),
             "  rotation.activation_hours: (not set) -> 2".to_string(),
-            "  rotation.period_hours: (not set) -> 48".to_string(),
+            "  rotation.period_hours: (not set) -> 1440".to_string(),
             format!(
                 "psp-mint: to apply them, run `spi restart psp-mint` (a mint started with `spi start`: `spi stop`, then `spi start`). {DOWNTIME}"
             ),
@@ -442,11 +442,11 @@ fn several_settings_and_both_mints_are_each_named_under_their_own_mint() {
 #[test]
 fn a_setting_that_reloads_live_and_one_that_did_not_change_name_nothing() {
     let dir = scratch("reload-live");
-    reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 24\n");
+    reload_with(&dir, "[psp.settings.rotation]\nperiod_hours = 720\n");
     // The restart-only value is the same; a live setting changed.
     let lines = reload_with(
         &dir,
-        "[psp.settings.rotation]\nperiod_hours = 24\n[psp.settings.scan]\nhealth_grace_secs = 90\n",
+        "[psp.settings.rotation]\nperiod_hours = 720\n[psp.settings.scan]\nhealth_grace_secs = 90\n",
     );
     assert_eq!(
         lines,

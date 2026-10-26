@@ -6,7 +6,8 @@
 //! d. esp-mint is running.
 //! e. The SPI's own wallet holds PSP. **Required**: without it the SPI cannot
 //!    pay the first fee or buy anything from itself. Two ways to fund it, both
-//!    printed by `spi setup`: buy PSP (`buy-psp`, pay the payload, `claim-psp`),
+//!    printed by `spi setup`: buy PSP (`buy-psp --mint-key DID`, pay the payload
+//!    once, then `claim-psp` after its confirmations),
 //!    or take in a PSP handoff (`handoff import --did-key-file`). The genesis
 //!    SPI buys from itself with every fee off.
 //! f. The SPI's backups are funded: FSP bought from another service, if the SPI

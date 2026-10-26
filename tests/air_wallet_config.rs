@@ -182,7 +182,7 @@ fn the_wallet_config_is_written_from_spi_toml_and_config_shows_each_setting_and_
     let dir = scratch("wallet-cfg");
     let (name, did) = (air_name(), psp_did());
     let text = format!(
-        "[air]\nname = \"{name}\"\n[psp]\ndid = \"{did}\"\n[wallet.settings.psp]\nmin_purchase = 100\n"
+        "[air]\nname = \"{name}\"\n[psp]\ndid = \"{did}\"\n[wallet.settings.air]\nattempts = 3\n"
     );
     let spi = load(&dir, Some(&text)).unwrap();
     // No program may be run: both DIDs are written down or have no key file yet.
@@ -198,7 +198,7 @@ fn the_wallet_config_is_written_from_spi_toml_and_config_shows_each_setting_and_
     assert_eq!(t["air"]["host"].as_str(), Some("127.0.0.1"));
     assert_eq!(t["air"]["psp_did"].as_str(), Some(did.as_str()));
     assert!(t["air"].as_table().unwrap().get("esp_did").is_none());
-    assert_eq!(t["psp"]["min_purchase"].as_integer(), Some(100));
+    assert_eq!(t["air"]["attempts"].as_integer(), Some(3));
 
     let said = commands::config_show(&spi, None).join("\n");
     assert!(
@@ -214,7 +214,7 @@ fn the_wallet_config_is_written_from_spi_toml_and_config_shows_each_setting_and_
         "{said}"
     );
     assert!(
-        said.contains("psp.min_purchase = 100   ([wallet.settings] in spi.toml)"),
+        said.contains("air.attempts = 3   ([wallet.settings] in spi.toml)"),
         "{said}"
     );
     assert!(
@@ -296,57 +296,115 @@ fn a_mints_did_is_asked_of_its_binary_only_where_its_key_file_already_exists() {
     assert!(never.calls.lock().unwrap().is_empty());
 }
 
+/// psp-mint 0.8 has no reconciliation window, and a `settle.reconciliation_window_days`
+/// in its file stops it at start. Fails if spi reads the key again, writes it to
+/// `psp-mint.toml`, or refuses it with "not a setting" instead of saying it was
+/// removed.
 #[test]
-fn the_reconciliation_window_is_a_named_key_shown_by_name_and_written_to_psp_mint() {
-    let spi = load(
-        &scratch("window"),
+fn the_reconciliation_window_key_is_refused_as_removed_and_never_written_to_psp_mint() {
+    let problems = load(
+        &scratch("window-removed"),
         Some("[psp]\nreconciliation_window_days = 30\n"),
     )
-    .unwrap();
+    .unwrap_err();
     assert_eq!(
-        shown(&spi, "psp.reconciliation_window_days"),
-        ("30".into(), "spi.toml".into())
+        problems,
+        vec![
+            "[psp] reconciliation_window_days was removed in spi 0.3.0: psp-mint no longer has a reconciliation window: a payer claims what a payment is owed within 30 days of the owed record being written, and that window is not a setting. Remove it"
+                .to_string()
+        ]
     );
+    // Without it, the generated psp-mint.toml names nothing under settle, and spi
+    // shows no such key.
+    let spi = load(&scratch("window-default"), None).unwrap();
     let t = table(&generate::render(&spi, Which::Psp).unwrap());
+    assert!(t.get("settle").is_none(), "{t:?}");
+    assert!(
+        !spi.shown
+            .iter()
+            .any(|(k, _, _)| k.contains("reconciliation")),
+        "{:?}",
+        spi.shown
+    );
+}
+
+/// `settle.retention_days` and `settle.prune_horizon_days` are psp-mint's own and
+/// pass through as written; `config show` names them, with psp-mint's defaults
+/// when they are not set. Fails if spi drops, renames or validates them.
+#[test]
+fn the_settle_retention_settings_reach_psp_mint_as_written_and_config_show_names_them() {
+    let spi = load(
+        &scratch("settle-pass"),
+        Some("[psp.settings.settle]\nretention_days = 120\nprune_horizon_days = 400\n"),
+    )
+    .unwrap();
+    let t = table(&generate::render(&spi, Which::Psp).unwrap());
+    assert_eq!(t["settle"]["retention_days"].as_integer(), Some(120));
+    assert_eq!(t["settle"]["prune_horizon_days"].as_integer(), Some(400));
     assert_eq!(
-        t["settle"]["reconciliation_window_days"].as_integer(),
-        Some(30)
+        shown(&spi, "psp.settings.settle.retention_days"),
+        ("120".into(), "spi.toml".into())
+    );
+    assert_eq!(
+        shown(&spi, "psp.settings.settle.prune_horizon_days"),
+        ("400".into(), "spi.toml".into())
     );
     let said = commands::config_show(&spi, None).join("\n");
     assert!(
-        said.contains("psp.reconciliation_window_days = 30   (spi.toml)"),
+        said.contains("psp.settings.settle.retention_days = 120   (spi.toml)"),
         "{said}"
     );
-
-    // Not set: psp-mint's own default stands, and the file does not name it.
-    let spi = load(&scratch("window-default"), None).unwrap();
-    assert_eq!(
-        shown(&spi, "psp.reconciliation_window_days"),
-        ("14 (psp-mint's own)".into(), "default".into())
-    );
-    let t = table(&generate::render(&spi, Which::Psp).unwrap());
-    assert!(t.get("settle").is_none(), "{t:?}");
-
-    // Out of range, and also passed through: refused.
-    for bad in ["0", "366", "\"14\""] {
-        let file = format!("[psp]\nreconciliation_window_days = {bad}\n");
-        let problems = load(&scratch("window-bad"), Some(&file)).unwrap_err();
-        assert!(
-            problems[0]
-                .contains("[psp] reconciliation_window_days must be a whole number from 1 to 365"),
-            "{bad}: {problems:?}"
-        );
-    }
+    // spi does not judge the values: 0 (keep everything) and a horizon below the
+    // floor psp-mint would refuse both pass.
     let spi = load(
-        &scratch("window-pass"),
-        Some("[psp.settings.settle]\nreconciliation_window_days = 5\n"),
+        &scratch("settle-zero"),
+        Some("[psp.settings.settle]\nretention_days = 0\nprune_horizon_days = 1\n"),
     )
     .unwrap();
-    let err = generate::render(&spi, Which::Psp).unwrap_err();
-    assert!(
-        err.contains("psp.settings.settle.reconciliation_window_days"),
-        "{err}"
+    let t = table(&generate::render(&spi, Which::Psp).unwrap());
+    assert_eq!(t["settle"]["retention_days"].as_integer(), Some(0));
+    assert_eq!(t["settle"]["prune_horizon_days"].as_integer(), Some(1));
+    // Not set: psp-mint's own defaults stand and the file does not name them.
+    let spi = load(&scratch("settle-default"), None).unwrap();
+    assert_eq!(
+        shown(&spi, "psp.settings.settle.retention_days"),
+        ("90 (psp-mint's own)".into(), "default".into())
     );
+    assert_eq!(
+        shown(&spi, "psp.settings.settle.prune_horizon_days"),
+        ("210 (psp-mint's own)".into(), "default".into())
+    );
+}
+
+/// psp-mint needs a rotation period of 0 or at least 720 hours (the claim
+/// window). Fails if 1 to 719 is accepted, 720 or 0 is refused, or esp-mint's
+/// period is looked at.
+#[test]
+fn a_psp_rotation_period_of_1_to_719_hours_is_refused() {
+    for hours in [1, 24, 719] {
+        let file = format!("[psp.settings.rotation]\nperiod_hours = {hours}\n");
+        let problems = load(&scratch("period-bad"), Some(&file)).unwrap_err();
+        assert_eq!(
+            problems,
+            vec![format!(
+                "psp.settings.rotation.period_hours is {hours}: psp-mint needs 0 (never rotate) or at least 720 hours, so that the keyset a payer claims with outlives the 30-day claim window"
+            )]
+        );
+    }
+    for hours in [0, 720, 1440] {
+        let file = format!("[psp.settings.rotation]\nperiod_hours = {hours}\n");
+        let spi = load(&scratch("period-ok"), Some(&file)).unwrap();
+        let t = table(&generate::render(&spi, Which::Psp).unwrap());
+        assert_eq!(t["rotation"]["period_hours"].as_integer(), Some(hours));
+    }
+    // esp-mint's own period is not spi's to judge.
+    let spi = load(
+        &scratch("period-esp"),
+        Some("[esp.settings.rotation]\nperiod_hours = 24\n"),
+    )
+    .unwrap();
+    let t = table(&generate::render(&spi, Which::Esp).unwrap());
+    assert_eq!(t["rotation"]["period_hours"].as_integer(), Some(24));
 }
 
 #[test]

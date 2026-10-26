@@ -33,7 +33,6 @@ fn named(which: Which) -> &'static [&'static [&'static str]] {
             &["server", "bind"],
             &["air", "server"],
             &["air", "host"],
-            &["settle", "reconciliation_window_days"],
             &["burn", "enabled"],
             &["burn", "threshold_psp"],
             &["burn", "balance_file"],
@@ -92,7 +91,7 @@ pub fn table(spi: &Spi, which: Which) -> Result<Table, String> {
                 path.join("."),
                 match which {
                     Which::Psp =>
-                        "network, [bitcoind], [air] name and host, and [psp] bind, reconciliation_window_days, burn, burn_threshold_psp and burn_balance_file",
+                        "network, [bitcoind], [air] name and host, and [psp] bind, burn, burn_threshold_psp and burn_balance_file",
                     Which::Esp =>
                         "network, [air] name and host, [esp] bind and admin_bind; the PSP URL follows [psp] bind",
                 }
@@ -111,13 +110,6 @@ pub fn table(spi: &Spi, which: Which) -> Result<Table, String> {
                 s(&spi.cookie.display().to_string()),
             );
             put(&mut t, &["server", "bind"], s(&m.bind));
-            if let Some(days) = spi.reconciliation_window_days {
-                put(
-                    &mut t,
-                    &["settle", "reconciliation_window_days"],
-                    Value::Integer(days as i64),
-                );
-            }
             // Written even when off, so that the file says that nothing the
             // PSP is paid is burned.
             put(&mut t, &["burn", "enabled"], Value::Boolean(spi.burn));

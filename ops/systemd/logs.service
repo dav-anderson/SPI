@@ -2,10 +2,10 @@
 # minutes, while the services run (they are meant never to stop, so the rotation
 # at their start is not enough): a log over [service] log_max_size_mb is copied
 # aside and emptied in place, and only the newest [service] log_keep .bak files
-# stay. The logs are the mints', the AIR server's, bitcoind's, the health
-# monitors' and the scheduled upgrade's. It runs as root, because the health
-# monitors and the scheduled upgrade write their logs as root, and it stops
-# nothing.
+# stay (0 for either setting means no limit). The logs are the mints', the AIR
+# server's, bitcoind's, the health monitors' and the scheduled upgrade's. It runs
+# as root, because the health monitors and the scheduled upgrade write their logs
+# as root, and it stops nothing.
 [Unit]
 Description=Service Points: keep the service logs under their size cap
 

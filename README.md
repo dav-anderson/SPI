@@ -1,6 +1,6 @@
 # spi
 
-One config and one command line over `psp-mint`, `esp-mint` and `bitcoind`, and over the two programs the SPI needs beside them: the AIR server (`air_server`, the stock one) that the mints and the wallets reach each other through, and the SPI's own `ecash-wallet`. It does not link the mints or change them: it writes their config files, the AIR server's settings, the wallet's config and the files that run them as services, starts the binaries, and reads their `GET /health` and `GET /audit`. It never manages fsp-mint: an FSP mint is run through the operator control interface of the AIR service it belongs to. Version 0.2.2. Why it is built this way is in [DESIGN.md](DESIGN.md).
+One config and one command line over `psp-mint`, `esp-mint` and `bitcoind`, and over the two programs the SPI needs beside them: the AIR server (`air_server`, the stock one) that the mints and the wallets reach each other through, and the SPI's own `ecash-wallet`. It does not link the mints or change them: it writes their config files, the AIR server's settings, the wallet's config and the files that run them as services, starts the binaries, and reads their `GET /health` and `GET /audit`. It never manages fsp-mint: an FSP mint is run through the operator control interface of the AIR service it belongs to. Version 0.3.0. Why it is built this way is in [DESIGN.md](DESIGN.md).
 
 **spi is designed to run on a Linux system** (systemd). macOS is supported only as a development machine: the commands and the service files for it exist so that spi can be tried and tested on a Mac, and it is not meant to run a production SPI. (The code spi shares with `aso`, the part that downloads and upgrades programs, schedules an upgrade and keeps logs under a cap, is the [air-minterface](https://github.com/dav-anderson/air-minterface) crate.)
 
@@ -48,7 +48,7 @@ One file, `spi.toml`, in `~/.spi` (`SPI_DIR`, or `--dir`; `SPI_CONFIG` or `--con
 | `[air] public_name`, `public_cert`, `public_key` | | none | With all three, `install` writes `nginx-air-server.conf` into the service folder: nginx answers on `public_name` and forwards to `ws_addr`. spi does not install it. |
 | `[air] fee_read`, `fee_write` | | `0` | Refused unless 0: stock air_server 1.0.1 has no fee hook (upstream ROADMAP item 1, the air_server fee hook). They are there so the setting has one named place when the hook exists. |
 | `[air] version` | | none | What you installed (`x.y.z`). air_server publishes no releases upstream, so this is your word for the binary `[air] bin` names; `spi upgrade` installs that binary and records it. |
-| `[psp] reconciliation_window_days` | | psp-mint's own | `settle.reconciliation_window_days`, named here so `config show` shows it by name. |
+| `[psp.settings.settle] retention_days`, `prune_horizon_days` | | `90`, `210` (psp-mint's own) | How long psp-mint keeps a finished payment in `settlements.json` (days after it finished), and how long it then remembers the payment's txid (days after its block). **0 keeps everything** for either. psp-mint prunes its own records and checks both values (the horizon must be 0 or at least twice the retention plus 30); spi builds nothing for it, copies them as written, and `config show` names them (`psp.settings.settle.retention_days`, with `psp-mint's own` when they are not set). See psp-mint's README, "Retention and the horizon". |
 | `[psp] burn`, `burn_threshold_psp` | | `false`, `0` | See "The PSP the SPI is paid". Off: every PSP paid to the SPI is reissued to its wallet. With burn on, the threshold is measured against the SPI wallet's current PSP balance. |
 | `[psp] burn_balance_file` | | `wallet_balance.json` in psp-mint's network folder; `<data_dir>/spi-share/wallet_balance.json` for a service | Where `spi collect` and `spi audit` publish the wallet's PSP balance, and where psp-mint reads it (`burn.balance_file`). Only used with `burn = true`. How old the figure may be is psp-mint's `burn.balance_max_age_secs` (86400 s, 24 hours; a setting that reloads live, under `[psp.settings.burn]`). There is no timer (see "The PSP the SPI is paid"). |
 | `[psp] did`, `[esp] did` | | read from the mint's `mint_did_key.json` | The mints' DIDs, for the wallet's `air.psp_did` and `air.esp_did`. Write them here if spi can not read the file. |
@@ -61,24 +61,26 @@ One file, `spi.toml`, in `~/.spi` (`SPI_DIR`, or `--dir`; `SPI_CONFIG` or `--con
 | `[service] user`, `group` | `SPI_SERVICE_USER`, `SPI_SERVICE_GROUP` | `spmint` (Linux), `_spmint` (macOS); the group is the user's | The account the services run as: no login, no password, owns the data and the logs. Lowercase letters, digits, `_` and `-`. |
 | `[service] bin_dir`, `etc_dir`, `data_dir`, `log_dir` | `SPI_SERVICE_BIN_DIR`, `..._ETC_DIR`, `..._DATA_DIR`, `..._LOG_DIR` | `/usr/local/bin`, `/etc/sp-mint`, `/var/lib/sp-mint`, `/var/log/sp-mint` | Where the services find their binaries, settings and env files, data and logs. Absolute paths. |
 | `[service] health` | | `true` | Whether a health monitor is installed for each mint. |
-| `[service] log_keep`, `log_max_size_mb` | | `4`, `50` | How many rotated copies of each log are kept (1 to 52), and the size in MB (1 to 10240) past which a log is moved aside. Every service log is held to this on Linux (see "Logs" under "Running as services"). No effect on macOS, which is a development machine. |
+| `[service] log_keep`, `log_max_size_mb` | | `4`, `50` | How many rotated copies of each log are kept (0 to 52), and the size in MB (0 to 10240) past which a log is moved aside. **0 keeps everything**: `log_keep = 0` keeps every rotated copy, and `log_max_size_mb = 0` never moves a log aside. Every service log is held to this on Linux (see "Logs" under "Running as services"). No effect on macOS, which is a development machine. |
 | `[release] url`, `bitcoin_url` | | `https://api.github.com`, `https://bitcoincore.org` | Where `spi upgrade` lists and downloads releases: the GitHub API for psp-mint and esp-mint, and Bitcoin Core's site. Must start with `http://` or `https://`. |
 | `[bitcoind] min_signatures`, `signers` | | `7`, the 18 builders compiled into spi | How many trusted builders must have signed Bitcoin Core's `SHA256SUMS` (1 to 100, and no more than the signers), and, optionally, a list that replaces the builders: each entry is `"<40 hex digits of the primary key fingerprint> <name of the key in guix.sigs builder-keys>"`. |
 | `[release] builder_keys_url` | | `https://raw.githubusercontent.com/bitcoin-core/guix.sigs/main/builder-keys` | Where each builder's `<name>.gpg` is. Only the fingerprints compiled into spi (or `signers`) count, so a wrong key file cannot add a signer. |
 | `[psp] revenue_keep_days` | | `90` | `spi collect` removes a reissued-PSP file this many days after it was taken in (by the file's age) and drops its line from `wallet/received.txt`; 0 keeps every file. A file not yet taken in is never removed. |
-| `[release] keep` | | `2` | Downloaded versions kept per program under `<spi folder>/releases/` (1 to 100). After a successful upgrade the older ones are removed, but never the installed version or the one it replaced. |
+| `[release] keep` | | `2` | Downloaded versions kept per program under `<spi folder>/releases/` (0 to 100). After a successful upgrade the oldest ones are removed first, but never the installed version or the one it replaced. **0 keeps every release.** |
 
 **Any other mint setting** goes under `[psp.settings]` or `[esp.settings]` (and any other wallet setting under `[wallet.settings]`), in the program's own sections, and is copied to the generated file as it is:
 
 ```toml
 [psp.settings.settle]
-min_confirmations = 3
+base_confirmations = 3
+retention_days = 120
+prune_horizon_days = 400
 
 [esp.settings.terms]
 maturity_days = 365
 ```
 
-A key that spi sets itself (`bitcoin.network`, `bitcoin.rpc_url`, `bitcoin.wallet`, `bitcoin.cookie`, `server.bind`, `air.server`, `air.host`, `settle.reconciliation_window_days`, `burn.enabled`, `burn.threshold_psp` and `burn.balance_file` for psp-mint; `server.bind`, `server.admin_bind`, `server.network`, `psp.url`, `air.server` and `air.host` for esp-mint; `air.server`, `air.host`, `air.psp_did` and `air.esp_did` for the wallet) cannot also be passed through: that would be two places for one value, and `install` refuses it, naming the key. The mints' own environment variables (`PSP_...`, `ESP_...`) still win over the generated files, as they do for any mint; `ESP_ADMIN_TOKEN` is read from spi's environment, not from any file.
+A key that spi sets itself (`bitcoin.network`, `bitcoin.rpc_url`, `bitcoin.wallet`, `bitcoin.cookie`, `server.bind`, `air.server`, `air.host`, `burn.enabled`, `burn.threshold_psp` and `burn.balance_file` for psp-mint; `server.bind`, `server.admin_bind`, `server.network`, `psp.url`, `air.server` and `air.host` for esp-mint; `air.server`, `air.host`, `air.psp_did` and `air.esp_did` for the wallet) cannot also be passed through: that would be two places for one value, and `install` refuses it, naming the key. The mints' own environment variables (`PSP_...`, `ESP_...`) still win over the generated files, as they do for any mint; `ESP_ADMIN_TOKEN` is read from spi's environment, not from any file.
 
 ## Commands
 
@@ -175,15 +177,15 @@ Edit `spi.toml`, run `spi install` (it writes the same folder again) and the scr
 
 ```
 psp-mint: 1 setting changed that needs a restart (a brief downtime), so the running mint keeps the old value until it is restarted; this reload restarts nothing:
-  rotation.period_hours: 24 -> 48
+  rotation.period_hours: 720 -> 1440
 psp-mint: to apply it, run `spi restart psp-mint` (a mint started with `spi start`: `spi stop`, then `spi start`). BRIEF DOWNTIME: restart. One process holds ...
 ```
 
 `spi restart psp-mint` (or `esp-mint`) is that restart: it warns, asks you to confirm, restarts that one mint and waits for its `/health`. It is a brief downtime because one process holds the mint's data (sled's exclusive lock), so the new process can start only after the old one has stopped; wallets' AIR requests wait in the mailbox slots on the AIR server, which stores them with no expiry, and are answered when the mint is back.
 
-**psp-mint, reloads live:** `server.melt_max_request_bytes`, `server.rollover_max_request_bytes`, `server.burns_max_request_bytes`, `server.check_state_max_request_bytes`, `rollover.max_items`, `bitcoin.rpc_url`, `bitcoin.cookie`, `bitcoin.rpc_timeout_secs`, `scan.interval_secs`, `scan.health_intervals`, `scan.health_grace_secs`, `price.*`, `settle.*`, `reconciliation.*`, `delivery.read_fee` and `burn.*`. Each is read at the next request or scan.
+**psp-mint, reloads live:** `server.melt_max_request_bytes`, `server.rollover_max_request_bytes`, `server.burns_max_request_bytes`, `server.check_state_max_request_bytes`, `rollover.max_items`, `bitcoin.rpc_url`, `bitcoin.cookie`, `bitcoin.rpc_timeout_secs`, `scan.interval_secs`, `scan.health_intervals`, `scan.health_grace_secs`, `price.*`, `settle.*` (so `settle.retention_days` and `settle.prune_horizon_days`, which psp-mint checks), `claim.*`, `delivery.read_fee` and `burn.*`. Each is read at the next request or scan.
 
-**psp-mint, needs a restart**, and why: `server.bind` (the API's listening socket is bound once, when the mint starts), `bitcoin.network` and `bitcoin.wallet` (the chain and the wallet the data belong to are fixed when the mint opens), `mint.max_denomination_units` (used only when the key file is first made), `rotation.activation_hours` and `rotation.period_hours` (the key schedule is worked out when the mint opens), `storage.mint_state` (a setting only: nothing reads it yet), and `air.server`, `air.host`, `air.held_reads` and `air.timeout_secs` (the AIR connection and its listener are built when the mint opens).
+**psp-mint, needs a restart**, and why: `server.bind` (the API's listening socket is bound once, when the mint starts), `bitcoin.network` and `bitcoin.wallet` (the chain and the wallet the data belong to are fixed when the mint opens), `rotation.activation_hours` and `rotation.period_hours` (the key schedule is worked out when the mint opens), `storage.mint_state` (a setting only: nothing reads it yet), and `air.server`, `air.host`, `air.held_reads` and `air.timeout_secs` (the AIR connection and its listener are built when the mint opens).
 
 **esp-mint, reloads live:** `psp.timeout_secs`, `psp.startup_retry_secs`, `terms.maturity_days`, `exchange.*`, `transfer.*`, `rollover.*`, `redeem.*` and `queue.max_payment_ref_bytes`.
 
@@ -319,7 +321,7 @@ How the split is kept, and why it survives restarts, is in esp-mint's DESIGN.md,
 
 The SPI is **not ready until step e is done**; `spi status` shows `ready` and the steps. The wallet is asked only when a to d are done, since it needs the AIR server and the PSP mint to answer. There is no "open channels" step. To fund the wallet there are two ways, and `setup` prints both with the DID and the paths filled in:
 
-- **Buy PSP.** The first SPI buys from itself, with every fee off (a fee it pays itself only eats into what it buys; `setup` notes a non-zero `reconciliation.fee`, `reconciliation.write_fee` or `delivery.read_fee` in `[psp.settings]`): `ecash-wallet buy-psp --mint-key <the PSP's DID> --sync AMOUNT...`, pay the payload it prints once, as the OP_RETURN of a Bitcoin payment to the PSP mint's wallet, then `ecash-wallet claim-psp`. Never pay it twice.
+- **Buy PSP.** The first SPI buys from itself, with every fee off (a fee it pays itself only eats into what it buys; `setup` notes a non-zero `claim.write_fee` or `delivery.read_fee` in `[psp.settings]`): `ecash-wallet buy-psp --mint-key <the PSP's DID>`, pay the payload it prints once, as the OP_RETURN of a Bitcoin payment to the PSP mint's wallet, then `ecash-wallet claim-psp` once the payment has its confirmations. The wallet claims what the PSP mint says the payment is owed; there are no amounts to choose.
 - **Take a hand-off** from another SPI: `ecash-wallet handoff import STRING-OR-FILE --did-key-file FILE`.
 
 `spi` prefixes the wallet command with its `--wallet` and `--config` and the network, so `setup` prints a line you can paste. `spi config show` prints the wallet's settings and where each came from. Both paths need the PSP's DID: spi reads it from `<data_dir>/<network>/mint_did_key.json` when the file exists (it asks `psp-mint pubkey` only then, which would make the file) or from `[psp] did`.

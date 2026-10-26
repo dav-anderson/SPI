@@ -486,7 +486,6 @@ pub const RESTART_ONLY_PSP: &[&str] = &[
     "server.bind",
     "bitcoin.network",
     "bitcoin.wallet",
-    "mint.max_denomination_units",
     "rotation.activation_hours",
     "rotation.period_hours",
     "storage.mint_state",

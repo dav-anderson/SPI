@@ -18,15 +18,20 @@ use toml::{Table, Value};
 
 use crate::signature;
 
-/// Versions of each program kept under `<spi dir>/releases/`: the installed one
-/// and the one before it, which is what a rollback needs.
+/// Versions of each program kept under `<spi dir>/releases/`, besides the
+/// installed one and the one before it (which a rollback needs and are never
+/// removed). 0 keeps every release.
 pub const DEFAULT_RELEASES_KEPT: u64 = 2;
-/// Rotated copies of a log kept (`<log>.<epoch>.bak`).
+/// Rotated copies of a log kept (`<log>.<epoch>.bak`). 0 keeps every copy.
 pub const DEFAULT_LOG_KEEP: u64 = 4;
 /// Days a reissued-PSP file is kept after `spi collect` took it in.
 pub const DEFAULT_REVENUE_KEEP_DAYS: u64 = 90;
-/// The size in MB past which a log is moved aside.
+/// The size in MB past which a log is moved aside. 0 never moves one.
 pub const DEFAULT_LOG_MAX_SIZE_MB: u64 = 50;
+
+/// The shortest rotation period psp-mint accepts besides 0, in hours: the claim
+/// window (`sp_wire::psp::CLAIM_WINDOW_SECS`, 30 days) in hours, 720.
+pub const PSP_MIN_ROTATION_HOURS: u64 = sp_wire::psp::CLAIM_WINDOW_SECS / 3600;
 
 pub const DEFAULT_PSP_BIND: &str = "127.0.0.1:3000";
 pub const DEFAULT_ESP_BIND: &str = "127.0.0.1:3100";
@@ -235,7 +240,8 @@ pub struct Service {
     pub health: bool,
     /// How many rotated copies of a log to keep, and the size in MB past which a
     /// log is moved aside (Linux: `spi logs rotate`, run by the units and by
-    /// `sp-logs.timer`; macOS does not rotate service logs).
+    /// `sp-logs.timer`; macOS does not rotate service logs). 0 keeps every
+    /// copy (`log_keep`) and never moves a log aside (`log_max_size_mb`).
     pub log_keep: u64,
     pub log_max_size_mb: u64,
 }
@@ -250,7 +256,9 @@ pub struct Release {
     pub bitcoin_url: String,
     /// Where each trusted builder's `<name>.gpg` key is (guix.sigs).
     pub builder_keys_url: String,
-    /// Versions kept per program under `<spi dir>/releases/`.
+    /// Versions kept per program under `<spi dir>/releases/`, besides the
+    /// installed one and the one before it. The oldest are removed first. 0
+    /// keeps every release.
     pub keep: u64,
 }
 
@@ -295,10 +303,6 @@ pub struct Spi {
     pub wallet_settings: Wallet,
     pub psp: MintSettings,
     pub esp: MintSettings,
-    /// `[psp] reconciliation_window_days`: how long a held or rejected payment
-    /// stays open for the payer (psp-mint's `settle.reconciliation_window_days`).
-    /// `None`: psp-mint's own default.
-    pub reconciliation_window_days: Option<u64>,
     /// `[psp] burn`: whether psp-mint may burn the PSP it is paid (psp-mint's
     /// `burn.enabled`). Off by default: the PSP it is paid is reissued to the
     /// SPI's own ecash-wallet.
@@ -342,9 +346,22 @@ pub fn is_mac(os: &str) -> bool {
     os == "macos"
 }
 
+/// The settings spi.toml no longer has: (the place, the key, why and what to do).
+/// A file that still sets one is refused with this text, not with "not a setting
+/// of spi", so an old file is never silently ignored.
+const REMOVED: &[(&str, &str, &str)] = &[(
+    "[psp] ",
+    "reconciliation_window_days",
+    "psp-mint no longer has a reconciliation window: a payer claims what a payment is owed within 30 days of the owed record being written, and that window is not a setting",
+)];
+
 fn only_keys(t: &Table, allowed: &[&str], place: &str, problems: &mut Vec<String>) {
     for k in t.keys() {
-        if !allowed.contains(&k.as_str()) {
+        if let Some((_, _, why)) = REMOVED.iter().find(|(p, key, _)| *p == place && key == k) {
+            problems.push(format!(
+                "{place}{k} was removed in spi 0.3.0: {why}. Remove it"
+            ));
+        } else if !allowed.contains(&k.as_str()) {
             problems.push(format!(
                 "{place}{k} is not a setting of spi (known here: {})",
                 allowed.join(", ")
@@ -577,7 +594,6 @@ impl Spi {
                     "settings",
                     "did",
                     "version",
-                    "reconciliation_window_days",
                     "burn",
                     "burn_threshold_psp",
                     "revenue_keep_days",
@@ -821,17 +837,26 @@ impl Spi {
             }
         };
         let psp_settings = mint(Which::Psp, psp, &mut problems);
+        // psp-mint needs a rotation period that outlives the 30-day claim window
+        // (a payer claims with the keyset that is current when the claim is made),
+        // so 1 to 719 hours is refused here, before psp-mint refuses to start.
+        // esp-mint's period is its own: spi does not look at it.
+        if let Some(n) = psp_settings
+            .settings
+            .get("rotation")
+            .and_then(Value::as_table)
+            .and_then(|t| t.get("period_hours"))
+            .and_then(Value::as_integer)
+            && (1..PSP_MIN_ROTATION_HOURS as i64).contains(&n)
+        {
+            problems.push(format!(
+                "psp.settings.rotation.period_hours is {n}: psp-mint needs 0 (never rotate) or at least {PSP_MIN_ROTATION_HOURS} hours, so that the keyset a payer claims with outlives the 30-day claim window"
+            ));
+        }
         let esp_settings = mint(Which::Esp, esp, &mut problems);
 
         // psp-mint settings spi names (so that they are shown by name, and a
         // pass-through of the same key is refused).
-        let reconciliation_window_days = whole(
-            psp,
-            "reconciliation_window_days",
-            (1, 365),
-            "[psp] ",
-            &mut problems,
-        );
         let burn = boolean(psp, "burn", "[psp] ", &mut problems).unwrap_or(false);
         let burn_threshold_psp = whole(
             psp,
@@ -1098,14 +1123,24 @@ impl Spi {
             }
         };
         let has = |t: Option<&Table>, key: &str| t.is_some_and(|t| t.contains_key(key));
-        shown.push((
-            "psp.reconciliation_window_days".into(),
-            match reconciliation_window_days {
-                Some(n) => n.to_string(),
-                None => "14 (psp-mint's own)".into(),
-            },
-            from(reconciliation_window_days.is_some()),
-        ));
+        // psp-mint prunes its own payment records; spi only names the two
+        // settings (they are passed through under [psp.settings.settle], and
+        // psp-mint validates them), so that `config show` shows them.
+        for (key, default) in [("retention_days", "90"), ("prune_horizon_days", "210")] {
+            let set = psp_settings
+                .settings
+                .get("settle")
+                .and_then(Value::as_table)
+                .and_then(|t| t.get(key));
+            shown.push((
+                format!("psp.settings.settle.{key}"),
+                match set {
+                    Some(v) => v.to_string(),
+                    None => format!("{default} (psp-mint's own)"),
+                },
+                from(set.is_some()),
+            ));
+        }
         shown.push(("psp.burn".into(), burn.to_string(), from(has(psp, "burn"))));
         shown.push((
             "psp.revenue_keep_days".into(),
@@ -1210,11 +1245,11 @@ impl Spi {
                 from(present),
             ));
         }
-        let log_keep = whole(service, "log_keep", (1, 52), "[service] ", &mut problems);
+        let log_keep = whole(service, "log_keep", (0, 52), "[service] ", &mut problems);
         let log_max_size_mb = whole(
             service,
             "log_max_size_mb",
-            (1, 10_240),
+            (0, 10_240),
             "[service] ",
             &mut problems,
         );
@@ -1238,7 +1273,7 @@ impl Spi {
                 "builder_keys_url",
                 "https://raw.githubusercontent.com/bitcoin-core/guix.sigs/main/builder-keys",
             ),
-            keep: whole(release_t, "keep", (1, 100), "[release] ", &mut problems)
+            keep: whole(release_t, "keep", (0, 100), "[release] ", &mut problems)
                 .unwrap_or(DEFAULT_RELEASES_KEPT),
         };
         let (log_keep, log_max_size_mb) = (
@@ -1311,7 +1346,6 @@ impl Spi {
                 },
                 psp: psp_settings,
                 esp: esp_settings,
-                reconciliation_window_days,
                 burn,
                 burn_threshold_psp: burn_threshold_psp.unwrap_or(0),
                 revenue_keep_days: revenue_keep_days.unwrap_or(DEFAULT_REVENUE_KEEP_DAYS),
@@ -1526,7 +1560,6 @@ network = \"regtest\"
 [psp]
 # bind = \"127.0.0.1:3000\"
 # did = \"02...\"             # `psp-mint pubkey`, for the SPI's wallet
-# reconciliation_window_days = 14
 # burn = false               # true: burn paid PSP once the SPI wallet holds burn_threshold_psp
 # burn_threshold_psp = 0     # the SPI wallet's balance psp-mint keeps it at
 # burn_balance_file = \"/var/lib/sp-mint/spi-share/wallet_balance.json\"   # where spi publishes that balance
@@ -1557,22 +1590,25 @@ network = \"regtest\"
 # data_dir = \"/var/lib/sp-mint\"
 # log_dir = \"/var/log/sp-mint\"
 # health = true               # a health monitor for each mint
-# log_keep = 4                # rotated copies of a log kept (Linux)
-# log_max_size_mb = 50        # a log bigger than this is moved aside (Linux)
+# log_keep = 4                # rotated copies of a log kept (Linux); 0 keeps all
+# log_max_size_mb = 50        # a log bigger than this is moved aside (Linux); 0 never moves one
 
 # Where `spi upgrade` gets releases, and how many downloaded versions of each
-# program it keeps (the installed one and the one before it are never removed):
+# program it keeps (the installed one and the one before it are never removed;
+# the oldest go first; 0 keeps every release):
 # [release]
 # url = \"https://api.github.com\"      # the releases of psp-mint and esp-mint
 # bitcoin_url = \"https://bitcoincore.org\"   # Bitcoin Core (bitcoind) is downloaded from here
 # builder_keys_url = \"https://raw.githubusercontent.com/bitcoin-core/guix.sigs/main/builder-keys\"   # the builders' public keys
-# keep = 2
+# keep = 2                                  # 0 keeps every release
 
 # Any psp-mint or esp-mint setting spi does not name goes in a settings table and
 # is copied to the generated file as it is, for example:
 #
 # [psp.settings.settle]
-# min_confirmations = 3
+# base_confirmations = 3
+# retention_days = 90         # psp-mint removes finished payments from its file after this many days; 0 keeps all
+# prune_horizon_days = 210    # and forgets a removed payment after this many; 0 keeps all (psp-mint checks both)
 #
 # [esp.settings.terms]
 # maturity_days = 365

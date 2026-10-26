@@ -200,3 +200,29 @@ fn a_wrong_argument_is_refused_naming_it() {
     assert_eq!(other.status.code(), Some(2));
     assert!(text(&other.stderr).contains("`spi logs` takes `rotate`, not `trim`. Run with --help"));
 }
+
+#[test]
+fn a_keep_of_0_and_a_max_of_0_mean_no_limit() {
+    // Fails if `--keep 0` removes every backup, or `--max-mb 0` moves a log that
+    // is any size (0 keeps everything: air-minterface 0.3.0).
+    let dir = scratch("zero");
+    let log = dir.join("psp-mint.log");
+    for epoch in 1..=6 {
+        std::fs::write(dir.join(format!("psp-mint.log.{epoch}.bak")), "old").unwrap();
+    }
+    big(&log, 2_100_000);
+    let name = log.display().to_string();
+    let out = rotate(&["--max-mb", "0", "--keep", "0", &name]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "");
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 2_100_000);
+    assert_eq!(baks(&log).len(), 6);
+    let out = rotate(&["--running", "--max-mb", "0", "--keep", "0", &name]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 2_100_000);
+    assert_eq!(baks(&log).len(), 6);
+    // With a size cap but keep 0, the log is moved aside and all 7 stay.
+    let out = rotate(&["--max-mb", "1", "--keep", "0", &name]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(baks(&log).len(), 7);
+}

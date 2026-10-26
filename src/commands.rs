@@ -493,11 +493,7 @@ fn lookup<'a>(t: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
 /// itself and only eats into what it buys.
 pub fn fee_notes(spi: &Spi) -> Vec<String> {
     let mut notes = Vec::new();
-    for key in [
-        "reconciliation.fee",
-        "reconciliation.write_fee",
-        "delivery.read_fee",
-    ] {
+    for key in ["claim.write_fee", "delivery.read_fee"] {
         if let Some(toml::Value::Integer(n)) = lookup(&spi.psp.settings, key)
             && *n != 0
         {
@@ -543,11 +539,11 @@ pub fn setup(spi: &Spi, exec: &dyn Exec) -> Outcome {
         };
         out.say("Fund the SPI wallet with PSP, one of two ways.");
         out.say("  Buy PSP (the genesis SPI buys from itself, with every fee off):");
+        out.say(format!("    1. {w} buy-psp --mint-key {psp_did}"));
+        out.say("    2. Pay the printed payload once, as the OP_RETURN of a Bitcoin payment to the PSP mint's wallet (ecash-wallet's README shows how).");
         out.say(format!(
-            "    1. {w} buy-psp --mint-key {psp_did} --sync AMOUNT [AMOUNT...]   (each AMOUNT a power of two; together at least the wallet's psp.min_purchase)"
+            "    3. {w} claim-psp   (after the payment has its confirmations)"
         ));
-        out.say("    2. Pay the printed payload once, as the OP_RETURN of a Bitcoin payment to the PSP mint's wallet (ecash-wallet's README shows how). Never pay it twice.");
-        out.say(format!("    3. {w} claim-psp"));
         out.say("  Or take in a PSP handoff from another SPI:");
         out.say(format!(
             "    {w} handoff import STRING-OR-FILE --did-key-file FILE"

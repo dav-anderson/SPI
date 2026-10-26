@@ -18,8 +18,9 @@ EnvironmentFile={{etc_dir}}/{{name}}.env
 EnvironmentFile={{etc_dir}}/{{name}}.secret.env
 # On every start, a restart after a crash included, the log is moved aside if it
 # is over [service] log_max_size_mb, and only the newest [service] log_keep
-# rotated logs stay. A failed rotation never stops the start. While the service
-# runs, sp-logs.timer keeps the log under the same cap.
+# rotated logs stay (0 for either setting means no limit). A failed rotation
+# never stops the start. While the service runs, sp-logs.timer keeps the log
+# under the same cap.
 ExecStartPre=-{{rotate_cmd}} {{log_dir}}/{{name}}.log
 ExecStart={{bin_dir}}/{{name}} serve
 # `systemctl reload` sends SIGHUP: the mint reads its settings file again and

@@ -136,8 +136,8 @@ fn the_psp_url_follows_the_psp_bind_and_a_wildcard_goes_through_loopback() {
 fn settings_spi_does_not_name_pass_through_unchanged() {
     let file = r#"
 [psp.settings.settle]
-min_confirmations = 3
-price_tolerance = 0.005
+base_confirmations = 3
+confirmation_tiers = "10000:4,50000:5"
 [psp.settings.storage]
 mint_state = ["aa", "bb"]
 [psp.settings.bitcoin]
@@ -149,8 +149,11 @@ fee_per_byte = 7
 "#;
     let spi = load(&scratch("pass"), Some(file)).unwrap();
     let p = parse(&generate::render(&spi, Which::Psp).unwrap());
-    assert_eq!(p["settle"]["min_confirmations"].as_integer(), Some(3));
-    assert_eq!(p["settle"]["price_tolerance"].as_float(), Some(0.005));
+    assert_eq!(p["settle"]["base_confirmations"].as_integer(), Some(3));
+    assert_eq!(
+        p["settle"]["confirmation_tiers"].as_str(),
+        Some("10000:4,50000:5")
+    );
     let list: Vec<&str> = p["storage"]["mint_state"]
         .as_array()
         .unwrap()
@@ -213,5 +216,75 @@ fn the_env_a_mint_is_started_with_names_its_folder_config_and_network() {
         get("ESP_CONFIG")
             .unwrap()
             .ends_with("generated/esp-mint.toml")
+    );
+}
+
+/// 0 keeps everything for `[service] log_keep`, `[service] log_max_size_mb` and
+/// `[release] keep`; the upper bounds stand and a negative number is refused; the
+/// release keep defaults to 2. Fails if 0 is refused (the old range started at
+/// 1), if an upper bound moves (52, 10240, 100), or if the default changes.
+#[test]
+fn zero_keeps_everything_for_the_keep_settings_and_the_upper_bounds_stand() {
+    let spi = load(
+        &scratch("keep-zero"),
+        Some("[service]\nlog_keep = 0\nlog_max_size_mb = 0\n[release]\nkeep = 0\n"),
+    )
+    .unwrap();
+    assert_eq!(spi.service.log_keep, 0);
+    assert_eq!(spi.service.log_max_size_mb, 0);
+    assert_eq!(spi.release.keep, 0);
+    for key in [
+        "service.log_keep",
+        "service.log_max_size_mb",
+        "release.keep",
+    ] {
+        let row = spi.shown.iter().find(|(k, _, _)| k == key).unwrap();
+        assert_eq!((row.1.as_str(), row.2.as_str()), ("0", "spi.toml"), "{key}");
+    }
+    // The upper bounds are still refused, and so is a negative number.
+    for (file, message) in [
+        (
+            "[service]\nlog_keep = 53\n",
+            "[service] log_keep must be a whole number from 0 to 52",
+        ),
+        (
+            "[service]\nlog_keep = -1\n",
+            "[service] log_keep must be a whole number from 0 to 52",
+        ),
+        (
+            "[service]\nlog_max_size_mb = 10241\n",
+            "[service] log_max_size_mb must be a whole number from 0 to 10240",
+        ),
+        (
+            "[release]\nkeep = 101\n",
+            "[release] keep must be a whole number from 0 to 100",
+        ),
+    ] {
+        let problems = load(&scratch("keep-bad"), Some(file)).unwrap_err();
+        assert_eq!(problems, vec![message.to_string()], "{file}");
+    }
+    // The edges that stay: the largest values are accepted.
+    let spi = load(
+        &scratch("keep-max"),
+        Some("[service]\nlog_keep = 52\nlog_max_size_mb = 10240\n[release]\nkeep = 100\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            spi.service.log_keep,
+            spi.service.log_max_size_mb,
+            spi.release.keep
+        ),
+        (52, 10_240, 100)
+    );
+    // Defaults.
+    let spi = load(&scratch("keep-default"), None).unwrap();
+    assert_eq!(
+        (
+            spi.service.log_keep,
+            spi.service.log_max_size_mb,
+            spi.release.keep
+        ),
+        (4, 50, 2)
     );
 }

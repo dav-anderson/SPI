@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 (2026-10-26)
+
+The PSP claim rework (pass 2): spi follows psp-mint 0.8.0 and 0.8.1 and sp-wire 0.6.0 (wire version 4). Pins: `air-minterface` v0.3.0, `sp-wire` v0.6.0 (it was v0.5.0; spi uses only `units::ESP_PER_PSP` and `psp::CLAIM_WINDOW_SECS`, so one sp-wire is built across the family).
+
+- **Removed: `[psp] reconciliation_window_days`.** psp-mint 0.8.0 has no reconciliation window, and a `settle.reconciliation_window_days` in its file stops it at start. spi no longer reads or writes the key; a spi.toml that still sets it is refused with a message that says it was removed (it is in `config::REMOVED`). `settle.reconciliation_window_days` under `[psp.settings.settle]` passes through and psp-mint refuses it.
+- **`settle.retention_days` and `settle.prune_horizon_days`** are psp-mint's own settings, set through `[psp.settings.settle]` and checked by psp-mint (spi does not validate them; 0 keeps everything). `spi config show` names them as `psp.settings.settle.retention_days` and `prune_horizon_days`, with `psp-mint's own` and the defaults 90 and 210 when they are not set. The README says so. spi builds no retention of its own (DESIGN, "Not done").
+- **`[psp.settings.rotation] period_hours` of 1 to 719 is refused** by the config check: psp-mint needs 0 (never) or at least 720 (`sp_wire::psp::CLAIM_WINDOW_SECS` in hours), so that the keyset a payer claims with outlives the claim window. esp-mint's period is not looked at.
+- **Fee notes** (`setup`, the genesis purchase with every fee off) name `claim.write_fee` and `delivery.read_fee`; `reconciliation.fee` and `reconciliation.write_fee` are gone. `RESTART_ONLY_PSP` loses `mint.max_denomination_units` (psp-mint removed it; every PSP keyset has the 64 keys 2^0 to 2^63).
+- **0 keeps everything**, for every keep setting (air-minterface 0.3.0): `[service] log_keep` 0 to 52 (0 keeps every rotated copy), `[service] log_max_size_mb` 0 to 10240 (0 never moves a log aside), `[release] keep` 0 to 100 (0 keeps every release). The upper bounds are unchanged, and `spi logs rotate --keep 0` and `--max-mb 0` mean the same. A release prune removes the oldest first, and never the installed release or the one before it. The default `[release] keep` stays 2.
+- **The printed next steps** for the genesis purchase: `buy-psp --mint-key DID` (no amounts, no `--sync`), pay the printed payload once, then `claim-psp` once the payment has its confirmations.
+- The example in the generated `spi.toml` comments uses `base_confirmations` (psp-mint removed `min_confirmations`).
+- Docs: README (settings table, the 0 rule, the settle settings, the restart-only list, the purchase steps), DESIGN ("Not done", and a pointer under item 7). Service-file comments say what 0 means.
+- Tests: 184 to 188, all passing.
+
 ## 0.2.2 (2026-10-25)
 
 `spi audit` already read the mints' `/audit` figures as a JSON number or a decimal string (`audit::whole`), so it reads psp-mint 0.7.0 and esp-mint 0.9.0, which give `issued`, `redeemed` and `outstanding` as strings, with no change to the code. One test (`audit_reads_string_totals_past_u64`) pins it past `u64::MAX` for psp-mint's `outstanding` and esp-mint's `outstanding`, `outstanding_matured` and `outstanding_unmatured`, while `reissued` stays a number. The version is the only other change. No wire change.
