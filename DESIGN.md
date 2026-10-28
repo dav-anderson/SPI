@@ -150,6 +150,7 @@ What spi does with them:
 
 ## Not done
 
+- The key check (P2-04) is not in spi. The mints publish their keys on AIR and the SPI's wallet checks every reply against them; spi neither reads the streams nor judges the result. It names esp-mint's three `[stream]` settings in `config show` and the README, pins sp-wire v0.7.0 (wire version 5), and says in the README that the wallet only warns about the SPI's own mints and never blacklists them. A check by spi itself (for example in `spi audit`) is not built.
 - The real mints are not started in the tests (see the README).
 - The health monitor is a shell script (the same one the mints have always used, embedded unchanged); spi has no monitor of its own.
 - The service script has not been run on a real Linux or macOS machine by the tests; run a first install on a test machine.

@@ -1117,8 +1117,8 @@ dependencies = [
 
 [[package]]
 name = "sp-wire"
-version = "0.6.0"
-source = "git+https://github.com/dav-anderson/sp-wire.git?tag=v0.6.0#cb8a9cd47bd0db8e00be8b7ff3a394d0f06847d9"
+version = "0.7.0"
+source = "git+https://github.com/dav-anderson/sp-wire.git?tag=v0.7.0#5d2ba81f36f011145bf2e5592423f9a40c1b54ed"
 dependencies = [
  "hex",
  "mint-types",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "spi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "air-minterface",
  "jiff",

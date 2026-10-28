@@ -376,6 +376,70 @@ fn the_settle_retention_settings_reach_psp_mint_as_written_and_config_show_names
     );
 }
 
+/// `stream.days_ahead`, `stream.record_max_bytes` and `stream.max_services` are
+/// esp-mint's own (esp-mint 0.11.0, the keys it publishes on AIR) and pass
+/// through as written; `config show` names them, with esp-mint's defaults when
+/// they are not set. Fails if spi drops, renames or validates them, writes them
+/// into psp-mint's file, or does not name them.
+#[test]
+fn the_esp_stream_settings_reach_esp_mint_as_written_and_config_show_names_them() {
+    let spi = load(
+        &scratch("stream-pass"),
+        Some(
+            "[esp.settings.stream]\ndays_ahead = 5\nrecord_max_bytes = 2097152\nmax_services = 250\n",
+        ),
+    )
+    .unwrap();
+    let t = table(&generate::render(&spi, Which::Esp).unwrap());
+    assert_eq!(t["stream"]["days_ahead"].as_integer(), Some(5));
+    assert_eq!(
+        t["stream"]["record_max_bytes"].as_integer(),
+        Some(2_097_152)
+    );
+    assert_eq!(t["stream"]["max_services"].as_integer(), Some(250));
+    let psp = table(&generate::render(&spi, Which::Psp).unwrap());
+    assert!(psp.get("stream").is_none(), "{psp:?}");
+    for (key, value) in [
+        ("days_ahead", "5"),
+        ("record_max_bytes", "2097152"),
+        ("max_services", "250"),
+    ] {
+        assert_eq!(
+            shown(&spi, &format!("esp.settings.stream.{key}")),
+            (value.into(), "spi.toml".into())
+        );
+    }
+    let said = commands::config_show(&spi, None).join("\n");
+    assert!(
+        said.contains("esp.settings.stream.days_ahead = 5   (spi.toml)"),
+        "{said}"
+    );
+    // spi does not judge the values: esp-mint refuses 0 days and a record under
+    // 1 MiB, and spi writes them as they are.
+    let spi = load(
+        &scratch("stream-odd"),
+        Some("[esp.settings.stream]\ndays_ahead = 0\nrecord_max_bytes = 10\n"),
+    )
+    .unwrap();
+    let t = table(&generate::render(&spi, Which::Esp).unwrap());
+    assert_eq!(t["stream"]["days_ahead"].as_integer(), Some(0));
+    assert_eq!(t["stream"]["record_max_bytes"].as_integer(), Some(10));
+    // Not set: esp-mint's own defaults stand and the file does not name them.
+    let spi = load(&scratch("stream-default"), None).unwrap();
+    let t = table(&generate::render(&spi, Which::Esp).unwrap());
+    assert!(t.get("stream").is_none(), "{t:?}");
+    for (key, value) in [
+        ("days_ahead", "2 (esp-mint's own)"),
+        ("record_max_bytes", "4194304 (esp-mint's own)"),
+        ("max_services", "1000 (esp-mint's own)"),
+    ] {
+        assert_eq!(
+            shown(&spi, &format!("esp.settings.stream.{key}")),
+            (value.into(), "default".into())
+        );
+    }
+}
+
 /// psp-mint needs a rotation period of 0 or at least 720 hours (the claim
 /// window). Fails if 1 to 719 is accepted, 720 or 0 is refused, or esp-mint's
 /// period is looked at.

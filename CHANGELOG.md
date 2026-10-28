@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 (2026-10-27)
+
+P2-04, the key check (pass 2): spi follows psp-mint 0.9.0, esp-mint 0.11.0 and sp-wire 0.7.0 (wire version 5: the one shared keyset ID over every key, and each mint publishing its keys on AIR so the wallet can check them). Pins: `air-minterface` v0.3.0 (unchanged), `sp-wire` v0.7.0 (it was v0.6.0; spi still uses only `units::ESP_PER_PSP` and `psp::CLAIM_WINDOW_SECS`, so one sp-wire is built across the family).
+
+- **`config show` names esp-mint's three new `[stream]` settings** as `esp.settings.stream.days_ahead`, `record_max_bytes` and `max_services`, with esp-mint's defaults (`2`, `4194304`, `1000`, "esp-mint's own") when they are not set. They are esp-mint's own: spi copies `[esp.settings.stream]` as written (it does not validate them) and they reload live, so `RESTART_ONLY_ESP` is unchanged. psp-mint 0.9.0 adds no setting. New public item: `spi::config::ESP_STREAM`.
+- **README**: the new settings row, the live list, a section "The key check" (what an SPI gets from it, that the wallet only warns about the SPI's own mints and never blacklists them, and that a wallet or mint older than these releases cannot talk to the new ones), and the install line names the current tags (psp-mint v0.9.0, esp-mint v0.11.0, ecash-wallet v0.9.0, SPI v0.4.0). DESIGN: "Not done" says the check is not in spi. The generated `spi.toml` comments show `[esp.settings.stream]`.
+- spi has no minimum version for the programs it installs, so no check changes. The version strings in the tests (psp-mint 0.6.0 and so on) are stand-in releases and are unchanged.
+- Removed public items: none.
+- Tests: 188 to 189, one added (`the_esp_stream_settings_reach_esp_mint_as_written_and_config_show_names_them`).
+
 ## 0.3.0 (2026-10-26)
 
 The PSP claim rework (pass 2): spi follows psp-mint 0.8.0 and 0.8.1 and sp-wire 0.6.0 (wire version 4). Pins: `air-minterface` v0.3.0, `sp-wire` v0.6.0 (it was v0.5.0; spi uses only `units::ESP_PER_PSP` and `psp::CLAIM_WINDOW_SECS`, so one sp-wire is built across the family).

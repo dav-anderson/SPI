@@ -29,6 +29,14 @@ pub const DEFAULT_REVENUE_KEEP_DAYS: u64 = 90;
 /// The size in MB past which a log is moved aside. 0 never moves one.
 pub const DEFAULT_LOG_MAX_SIZE_MB: u64 = 50;
 
+/// esp-mint's own `[stream]` settings (esp-mint 0.11.0): `(key, default)`. spi
+/// copies them as written and `config show` names them; esp-mint checks them.
+pub const ESP_STREAM: &[(&str, &str)] = &[
+    ("days_ahead", "2"),
+    ("record_max_bytes", "4194304"),
+    ("max_services", "1000"),
+];
+
 /// The shortest rotation period psp-mint accepts besides 0, in hours: the claim
 /// window (`sp_wire::psp::CLAIM_WINDOW_SECS`, 30 days) in hours, 720.
 pub const PSP_MIN_ROTATION_HOURS: u64 = sp_wire::psp::CLAIM_WINDOW_SECS / 3600;
@@ -1141,6 +1149,26 @@ impl Spi {
                 from(set.is_some()),
             ));
         }
+        // esp-mint publishes the keys of every service it knows on AIR (esp-mint
+        // 0.11.0), so that a wallet can check the keys it is signed with. spi only
+        // names the three settings of that stream (they are passed through under
+        // [esp.settings.stream], and esp-mint validates them and reloads them
+        // live), so that `config show` shows them.
+        for (key, default) in ESP_STREAM {
+            let set = esp_settings
+                .settings
+                .get("stream")
+                .and_then(Value::as_table)
+                .and_then(|t| t.get(*key));
+            shown.push((
+                format!("esp.settings.stream.{key}"),
+                match set {
+                    Some(v) => v.to_string(),
+                    None => format!("{default} (esp-mint's own)"),
+                },
+                from(set.is_some()),
+            ));
+        }
         shown.push(("psp.burn".into(), burn.to_string(), from(has(psp, "burn"))));
         shown.push((
             "psp.revenue_keep_days".into(),
@@ -1612,4 +1640,9 @@ network = \"regtest\"
 #
 # [esp.settings.terms]
 # maturity_days = 365
+#
+# [esp.settings.stream]       # the keys esp-mint publishes on AIR (esp-mint 0.11.0); all reload live
+# days_ahead = 2              # days of per-service keys published ahead, 1 to 30
+# record_max_bytes = 4194304  # the most bytes in one record of the stream, 1 MiB to 15 MiB
+# max_services = 1000         # the most services whose keys are published, 1 to 100000
 ";
